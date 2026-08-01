@@ -5,8 +5,8 @@ import {
   REFERENCE_FORCE,
   bindAdjacentPieces,
   computeMovementScore,
-  hasFreeOuterCell,
-  isOuterEdge,
+  hasLegalPlacement,
+  isLegalPlacement,
   planMoves,
   resolveTick,
   type ColorKey,
@@ -314,11 +314,6 @@ export default function App() {
     rollNextColor();
   };
 
-  // Helper to find piece at specific coordinates
-  const getPieceAt = useCallback((r: number, c: number, list: Piece[] = pieces) => {
-    return list.find((p) => p.r === r && p.c === c);
-  }, [pieces]);
-
   // One tick of the cascade. All the decision-making lives in resolveTick;
   // everything here is presentation — sounds, burst animations, scoring and
   // scheduling the next tick.
@@ -336,9 +331,9 @@ export default function App() {
         setHeadings({});
         setIsResolving(false);
 
-        if (!hasFreeOuterCell(result.pieces)) {
+        if (!hasLegalPlacement(result.pieces)) {
           setGameOver(true);
-          setGameOverReason('No space left on the outer edge to place pieces!');
+          setGameOverReason('Every empty cell is touching a tile — nowhere left to drop!');
           playSound('lose');
         }
         return;
@@ -384,10 +379,9 @@ export default function App() {
   // Click handler to place active piece on the board
   const handleCellClick = (r: number, c: number) => {
     if (isResolving || gameOver) return;
-    if (!isOuterEdge(r, c)) return;
-
-    // Check if cell is occupied
-    if (getPieceAt(r, c)) return;
+    // Anywhere on the board, as long as it isn't touching a tile already
+    // there. isLegalPlacement covers the occupied case too.
+    if (!isLegalPlacement(r, c, pieces)) return;
 
     playSound('place');
     const newPieceId = pieceIdCounter.current++;
@@ -402,6 +396,9 @@ export default function App() {
     const updatedPieces = [...pieces, newPiece];
 
     // --- BINDING PHASE (IMMEDIATE, BEFORE ANY ATTRACTION) ---
+    // Since placement forbids landing next to an existing tile, this can no
+    // longer bind on arrival — kept as the guard that makes that true rather
+    // than merely assumed, and so the group bookkeeping has one entry point.
     const bindResult = bindAdjacentPieces(updatedPieces);
     const resolvedInitialPieces = bindResult.pieces;
     // Every turn starts from rest. Nothing on the board carries momentum
@@ -515,6 +512,7 @@ export default function App() {
       {showTutorial && (
         <div className="max-w-lg w-full mx-auto px-4 pb-3 text-sm leading-relaxed" style={{ color: THEME.inkSoft }}>
           Red pulls green, green pulls blue, blue pulls red. <br />
+          Drop anywhere that isn't touching a tile. <br />
           Tiles connect on contact. <br />
           Score 1 point for every tile that moves, every step. </div>
       )}
@@ -586,22 +584,24 @@ export default function App() {
               >
                 {Array.from({ length: GRID_SIZE }).map((_, r) =>
                   Array.from({ length: GRID_SIZE }).map((_, c) => {
-                    const isEdge = isOuterEdge(r, c);
-                    const piece = getPieceAt(r, c);
+                    // Playability is asked of the same function the click
+                    // handler uses, so a ghosted cell is always a cell that
+                    // will actually accept the tile.
+                    const isPlayable = isLegalPlacement(r, c, pieces);
                     const isLastPlaced = lastPlacedCell && lastPlacedCell.r === r && lastPlacedCell.c === c;
 
                     return (
                       <div
                         key={`${r}-${c}`}
                         onClick={() => handleCellClick(r, c)}
-                        className={`relative rounded-md flex items-center justify-center select-none ${isEdge ? 'cursor-pointer' : 'cursor-default'}`}
+                        className={`relative rounded-md flex items-center justify-center select-none ${isPlayable ? 'cursor-pointer' : 'cursor-default'}`}
                         style={{ backgroundColor: THEME.cell }}
                       >
-                        {/* Persistent ghost of the next tile on every valid
-                            edge cell — this, rather than a dashed outline, is
+                        {/* Persistent ghost of the next tile on every legal
+                            cell — this, rather than a dashed outline, is
                             what marks a cell as playable, and it works on
                             touch devices where :hover never fires. */}
-                        {isEdge && !piece && !isResolving && !gameOver && (
+                        {isPlayable && !isResolving && !gameOver && (
                           <div
                             className="absolute inset-1 rounded-md opacity-25 hover:opacity-60 active:opacity-75 transition-opacity"
                             style={{ backgroundColor: COLORS[nextColor]?.hex }}

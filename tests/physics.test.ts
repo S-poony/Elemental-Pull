@@ -15,7 +15,8 @@ import {
   forceAtDistance,
   getPushSet,
   isOnBoard,
-  hasFreeOuterCell,
+  isLegalPlacement,
+  hasLegalPlacement,
   planMoves,
   resolveDirection,
   resolveTick,
@@ -338,6 +339,42 @@ console.log('\nstructural: movement score counts exactly what moved');
   check('a tick that moved always scores', motionUnscored === 0, `${motionUnscored} unscored`);
 }
 
+// The placement rule and the binding rule use the same notion of adjacency
+// on purpose, which buys a guarantee worth asserting: a legal drop never
+// fuses on arrival, so the player can't hand-build a group.
+console.log('\ninvariant: a legal placement never binds on arrival');
+{
+  let bound = 0;
+  let illegalAllowed = 0;
+  const rnd = mulberry(20260801);
+  for (let i = 0; i < 2000; i++) {
+    const b = randomBoard(rnd, 1 + Math.floor(rnd() * 20));
+    const free = legalCells(b);
+    if (free.length === 0) continue;
+    const [r, c] = free[Math.floor(rnd() * free.length)];
+    const id = 10000 + i;
+    const color = (['R', 'G', 'B'] as ColorKey[])[Math.floor(rnd() * 3)];
+    if (bindAdjacentPieces([...b, { id, color, r, c, groupId: id }]).didBind) bound++;
+    // And an occupied or touching cell is never offered.
+    b.forEach((p) => {
+      if (isLegalPlacement(p.r, p.c, b)) illegalAllowed++;
+      if (isLegalPlacement(p.r + 1, p.c, b)) illegalAllowed++;
+      if (isLegalPlacement(p.r, p.c - 1, b)) illegalAllowed++;
+    });
+  }
+  check('no legal drop fuses on arrival', bound === 0, `${bound} bound`);
+  check('occupied and touching cells are rejected', illegalAllowed === 0, `${illegalAllowed} allowed`);
+  check(
+    'an empty board offers every cell',
+    legalCells([]).length === GRID_SIZE * GRID_SIZE
+  );
+  // One tile in the middle removes itself and its four neighbours.
+  check(
+    'a lone tile blocks exactly five cells',
+    legalCells(board(['....', '....', '..R.', '....'])).length === GRID_SIZE * GRID_SIZE - 5
+  );
+}
+
 console.log('\nstructural: cascades terminate');
 {
   const CAP = 400;
@@ -518,15 +555,8 @@ console.log('\nfuzz: full games');
     let nextId = 0;
     let turns = 0;
     try {
-      while (turns < 300 && hasFreeOuterCell(pieces)) {
-        const free: Array<[number, number]> = [];
-        for (let r = 0; r < GRID_SIZE; r++)
-          for (let c = 0; c < GRID_SIZE; c++)
-            if (
-              (r === 0 || r === GRID_SIZE - 1 || c === 0 || c === GRID_SIZE - 1) &&
-              !pieces.some((p) => p.r === r && p.c === c)
-            )
-              free.push([r, c]);
+      while (turns < 300 && hasLegalPlacement(pieces)) {
+        const free = legalCells(pieces);
         if (free.length === 0) break;
         const [r, c] = free[Math.floor(rnd() * free.length)];
         const color = (['R', 'G', 'B'] as ColorKey[])[Math.floor(rnd() * 3)];
@@ -601,15 +631,8 @@ console.log('\ncomparison: did the rewrite make the game easier?');
     let cleared = 0;
     let occupancy = 0;
 
-    while (turns < 400 && hasFreeOuterCell(pieces)) {
-      const free: Array<[number, number]> = [];
-      for (let r = 0; r < GRID_SIZE; r++)
-        for (let c = 0; c < GRID_SIZE; c++)
-          if (
-            (r === 0 || r === GRID_SIZE - 1 || c === 0 || c === GRID_SIZE - 1) &&
-            !pieces.some((p) => p.r === r && p.c === c)
-          )
-            free.push([r, c]);
+    while (turns < 400 && hasLegalPlacement(pieces)) {
+      const free = legalCells(pieces);
       if (free.length === 0) break;
       const [r, c] = free[Math.floor(rnd() * free.length)];
       const color = (['R', 'G', 'B'] as ColorKey[])[Math.floor(rnd() * 3)];
@@ -643,7 +666,7 @@ console.log('\ncomparison: did the rewrite make the game easier?');
       occupancy += pieces.length;
       turns++;
     }
-    return { turns, cleared, occupancy: occupancy / Math.max(1, turns), ended: !hasFreeOuterCell(pieces) };
+    return { turns, cleared, occupancy: occupancy / Math.max(1, turns), ended: !hasLegalPlacement(pieces) };
   };
 
   let oldTurns = 0, newTurns = 0, oldOcc = 0, newOcc = 0, oldEnded = 0, newEnded = 0;
@@ -665,6 +688,14 @@ console.log('\ncomparison: did the rewrite make the game easier?');
 }
 
 // --- helpers -------------------------------------------------------------
+// Every cell a player could legally drop on, in the fuzz harnesses' order.
+function legalCells(pieces: Piece[]): Array<[number, number]> {
+  const out: Array<[number, number]> = [];
+  for (let r = 0; r < GRID_SIZE; r++)
+    for (let c = 0; c < GRID_SIZE; c++) if (isLegalPlacement(r, c, pieces)) out.push([r, c]);
+  return out;
+}
+
 function mulberry(seed: number) {
   let a = seed;
   return () => {

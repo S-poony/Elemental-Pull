@@ -1,6 +1,6 @@
 # Reactor-Attractor
 
-A small game. You drop tiles on the outer edge of an 8×8 board, they attract each other, and you score by how much motion your placement sets off. You lose when the edge is completely full.
+A small game. You drop tiles onto an 8×8 board, they attract each other, and you score by how much motion your placement sets off. You lose when there's nowhere legal left to drop.
 
 ## The rules
 
@@ -11,6 +11,8 @@ Colours chase in a cycle: **red pulls green, green pulls blue, blue pulls red.**
 3. **Strongest first.** Every group that wants to move moves in the same tick, committed in order of pull strength. A group whose path was taken waits for the next tick instead of cancelling anyone else's move.
 
 Tiles connect on contact — any two touching tiles bind into one group.
+
+**Where you can drop.** Any empty cell that isn't directly above, below, left or right of a tile already on the board. Diagonals are fine. Because that's the same adjacency binding uses, a tile can never fuse the moment it lands — you can only aim it and let the pulls do the rest. The game ends when every empty cell is touching something.
 
 **Scoring: one point per tile that moves, per step.** A placement that nudges one tile once is worth 1; a placement that sets off a twelve-step cascade across half the board is worth dozens. Tiles that slide off the edge still explode and leave the board — that's what keeps the edge clear enough to keep playing — but the explosion itself scores nothing. The points are in the reaction, not the disposal.
 

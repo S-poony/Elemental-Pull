@@ -87,9 +87,6 @@ export const ATTRACTION_RULES: Record<ColorKey, ColorKey> = {
   B: 'R',
 };
 
-export const isOuterEdge = (r: number, c: number): boolean =>
-  r === 0 || r === GRID_SIZE - 1 || c === 0 || c === GRID_SIZE - 1;
-
 export const isOnBoard = (r: number, c: number): boolean =>
   r >= 0 && r <= GRID_SIZE - 1 && c >= 0 && c <= GRID_SIZE - 1;
 
@@ -574,10 +571,32 @@ export const POINTS_PER_MOVED_PIECE = 1;
 export const computeMovementScore = (movedPieceCount: number): number =>
   POINTS_PER_MOVED_PIECE * movedPieceCount;
 
-export const hasFreeOuterCell = (piecesList: Piece[]): boolean => {
+// --- PLACEMENT ---
+// A tile may go on any empty cell that doesn't orthogonally touch one
+// already on the board. Placement used to be restricted to the outer edge;
+// the whole board is open now, and the no-touching rule is what keeps the
+// player from simply hand-assembling a group.
+//
+// Orthogonal deliberately matches bindAdjacentPieces exactly, which makes a
+// useful guarantee: a placement can never fuse on arrival. Every new tile
+// lands as its own group and has to be pulled into contact by the physics.
+// Diagonal drops stay legal, so the tightest opening a player can engineer
+// is a knight's-move-free diagonal pair — close, but still a real move away
+// from binding.
+export const isLegalPlacement = (r: number, c: number, piecesList: Piece[]): boolean => {
+  if (!isOnBoard(r, c)) return false;
+  return !piecesList.some(
+    (p) =>
+      (p.r === r && p.c === c) ||
+      (Math.abs(p.r - r) + Math.abs(p.c - c) === 1)
+  );
+};
+
+// Game over when the board offers nowhere legal left to drop.
+export const hasLegalPlacement = (piecesList: Piece[]): boolean => {
   for (let r = 0; r < GRID_SIZE; r++) {
     for (let c = 0; c < GRID_SIZE; c++) {
-      if (isOuterEdge(r, c) && !piecesList.some((p) => p.r === r && p.c === c)) return true;
+      if (isLegalPlacement(r, c, piecesList)) return true;
     }
   }
   return false;

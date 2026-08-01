@@ -23,6 +23,8 @@ Guidance for Claude Code working in this repo. The game's rules are in `README.m
 
 **Score is motion, and it's paid per tick.** `computeMovementScore(result.movedPieceCount)` is added in `runResolutionStep` on every tick that moved, not banked until the cascade settles — the HUD number climbing has to match the tiles actually sliding. `movedPieceCount` is measured *before* the off-board cull, because a group's last move off the edge is the payoff move; count it after and the biggest slides silently score short. This replaced a triangular destruction score (points per destroyed group, scaled by size), which rewarded hoarding one large group and paid nothing for the chain reactions the physics exists to produce. Explosions are still how the edge stays clear, but they're worth zero.
 
+**Placement adjacency and binding adjacency are the same rule, deliberately.** `isLegalPlacement` rejects any cell orthogonally touching a tile, which is exactly the relation `bindAdjacentPieces` fuses on — so a legal drop can never bind on arrival, and every new tile starts as its own group that the physics has to pull into contact. Widen placement to diagonals-blocked, or narrow binding, and that guarantee quietly disappears along with the reason placement is restricted at all: the player would be able to hand-assemble groups instead of engineering them. The suite asserts the no-bind-on-arrival property directly. This replaced an outer-edge-only placement rule (`isOuterEdge`, now gone); game over moved with it, from "the edge is full" to `hasLegalPlacement`.
+
 **A tick never freezes.** In `planMoves`, the first (strongest) candidate can't be rejected: its push set is closed by construction and nothing is committed yet to collide with. So if any group has a direction, at least one moves. Preserve this if you touch the greedy loop — it's the property the whole redesign rests on, and it's asserted directly in the suite.
 
 ## Testing
@@ -35,7 +37,7 @@ Compiles `physics.ts` + the suite to `.test-build/` with `tsc` (CommonJS) and ru
 
 Write scenarios with the `board([...])` picture helper. **It calls `bindAdjacentPieces`**, so any two tiles you draw next to each other come out as one group — which will quietly invalidate the scenario you thought you were testing. Leave a gap of at least two cells between things meant to stay separate. A distance-1 attractor can't exist on a settled board for the same reason, which is why `REFERENCE_FORCE` scales UI readouts against distance 2, not 1.
 
-Prefer structural assertions over pinned outputs: no freeze, always terminates, no overlapping tiles, deterministic under array reordering. The suite also fuzzes 200 full games and prints a side-by-side against the pre-rewrite engine (kept verbatim in the test file as `oldResolve`) — useful for catching accidental difficulty changes, since fewer locks means longer games.
+Prefer structural assertions over pinned outputs: no freeze, always terminates, no overlapping tiles, deterministic under array reordering. The suite also fuzzes 200 full games and prints a side-by-side against the pre-rewrite engine (kept verbatim in the test file as `oldResolve`) — useful for catching accidental difficulty changes, since fewer locks means longer games. Both fuzz harnesses pick moves with `legalCells`, so they play by the same placement rule as the component; if you change `isLegalPlacement`, the printed game-length numbers move with it and are not comparable to runs from before the change.
 
 ## Environment gotcha
 
