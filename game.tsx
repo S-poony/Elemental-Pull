@@ -6,9 +6,11 @@ type ColorKey = 'R' | 'G' | 'B';
 
 interface ColorConfig {
   name: string;
+  // Tile fill, and a slightly deeper shade of the same hue used for the
+  // tile's lower edge so pieces read as solid objects rather than flat
+  // discs — the same trick 2048's tiles use.
   hex: string;
-  bg: string;
-  border: string;
+  dark: string;
 }
 
 interface Piece {
@@ -69,11 +71,26 @@ interface ScoreFlash {
 
 // --- GAME CONFIG & CONSTANTS ---
 const GRID_SIZE = 8;
+// Warm-toned red/green/blue chosen to sit on the tan board without
+// fighting it — same hues as before, pulled towards 2048's palette.
 const COLORS: Record<ColorKey, ColorConfig> = {
-  R: { name: 'Red', hex: '#EF4444', bg: 'bg-red-500', border: 'border-red-600' },
-  G: { name: 'Green', hex: '#22C55E', bg: 'bg-green-500', border: 'border-green-600' },
-  B: { name: 'Blue', hex: '#3B82F6', bg: 'bg-blue-500', border: 'border-blue-600' },
+  R: { name: 'Red', hex: '#F2603C', dark: '#D64A28' },
+  G: { name: 'Green', hex: '#9DBF56', dark: '#82A340' },
+  B: { name: 'Blue', hex: '#6BA3C9', dark: '#5089AF' },
 };
+
+// --- 2048-STYLE THEME ---
+// One place for the board's warm neutrals so the header, HUD, board,
+// links and overlays can't drift apart from each other.
+const THEME = {
+  page: '#FAF8EF',       // cream page background
+  board: '#BBADA0',      // tan board box
+  cell: '#CDC1B4',       // empty cell, a shade lighter than the board
+  ink: '#776E65',        // primary text
+  inkSoft: '#A29A90',    // secondary text / labels
+  button: '#8F7A66',     // buttons + group link bridges
+  buttonHover: '#9F8B77',
+} as const;
 
 // Attraction rules: Key attracts Value (Value is pulled towards Key).
 // The cycle is directional — a piece is pulled towards the nearest piece
@@ -212,11 +229,14 @@ const bindAdjacentPieces = (currentPieces: Piece[]): { pieces: Piece[]; didBind:
                              (Math.abs(p1.c - p2.c) === 1 && p1.r === p2.r);
 
           if (isAdjacent) {
-            // Pieces bind on contact when either one attracts the other
+            // Pieces bind on contact when either one attracts the other,
+            // and same-colored pieces bind too — they don't pull each
+            // other, but they fuse into one group if they end up touching.
             const p1AttractsP2 = ATTRACTION_RULES[p1.color] === p2.color;
             const p2AttractsP1 = ATTRACTION_RULES[p2.color] === p1.color;
+            const sameColor = p1.color === p2.color;
 
-            if (p1AttractsP2 || p2AttractsP1) {
+            if (p1AttractsP2 || p2AttractsP1 || sameColor) {
               const targetGroupId = Math.min(p1.groupId, p2.groupId);
               const sourceGroupId = Math.max(p1.groupId, p2.groupId);
 
@@ -820,43 +840,44 @@ export default function App() {
   }, [pieces]);
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans select-none antialiased selection:bg-slate-800">
+    <div
+      className="min-h-screen flex flex-col select-none antialiased"
+      style={{ backgroundColor: THEME.page, color: THEME.ink }}
+    >
 
-      {/* HEADER — just a title and three icon buttons, no tagline */}
-      <header className="px-4 py-4 flex items-center justify-between max-w-lg w-full mx-auto">
-        <h1 className="text-2xl font-black tracking-tight text-slate-100">Attractor</h1>
+      {/* HEADER — full game name plus three icon buttons */}
+      <header className="px-4 py-5 flex items-center justify-between max-w-lg w-full mx-auto">
+        <h1 className="text-3xl font-bold tracking-tight" style={{ color: THEME.ink }}>
+          Reactor Attractor
+        </h1>
         <div className="flex items-center gap-2">
-          <button
-            onClick={() => setSoundEnabled(!soundEnabled)}
-            className="p-2 bg-slate-900 hover:bg-slate-800 text-slate-300 rounded-lg transition-colors border border-slate-800"
-            title={soundEnabled ? 'Mute' : 'Unmute'}
-          >
-            {soundEnabled ? <Volume2 size={18} /> : <VolumeX size={18} />}
-          </button>
-          <button
-            onClick={() => setShowTutorial(!showTutorial)}
-            className="p-2 bg-slate-900 hover:bg-slate-800 text-slate-300 rounded-lg transition-colors border border-slate-800"
-            title="How to play"
-          >
-            <HelpCircle size={18} />
-          </button>
-          <button
-            onClick={restartGame}
-            className="p-2 bg-slate-900 hover:bg-slate-800 text-slate-300 rounded-lg transition-colors border border-slate-800"
-            title="New game"
-          >
-            <RotateCcw size={18} />
-          </button>
+          {([
+            { key: 'sound', onClick: () => setSoundEnabled(!soundEnabled), title: soundEnabled ? 'Mute' : 'Unmute', icon: soundEnabled ? <Volume2 size={18} /> : <VolumeX size={18} /> },
+            { key: 'help', onClick: () => setShowTutorial(!showTutorial), title: 'How to play', icon: <HelpCircle size={18} /> },
+            { key: 'restart', onClick: restartGame, title: 'New game', icon: <RotateCcw size={18} /> },
+          ]).map((b) => (
+            <button
+              key={b.key}
+              onClick={b.onClick}
+              title={b.title}
+              className="p-2 rounded-md text-white transition-colors"
+              style={{ backgroundColor: THEME.button }}
+              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = THEME.buttonHover)}
+              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = THEME.button)}
+            >
+              {b.icon}
+            </button>
+          ))}
         </div>
       </header>
 
       {/* HOW TO PLAY — short, plain-language, collapsible */}
       {showTutorial && (
-        <div className="max-w-lg w-full mx-auto px-4 pb-2 text-sm text-slate-400 leading-relaxed">
-          Drop pieces on the outer edge. Red pulls green, green pulls blue, blue pulls red — attracted pieces
-          slide toward their attractor and connect on contact.
-          Pushed off the edge, a connected group vanishes and scores — bigger groups score more. The game ends
-          when the edge is completely full.
+        <div className="max-w-lg w-full mx-auto px-4 pb-3 text-sm leading-relaxed" style={{ color: THEME.inkSoft }}>
+          Drop tiles on the outer edge. Red pulls green, green pulls blue, blue pulls red — attracted tiles
+          slide toward their attractor and connect on contact, and matching colors connect too. Pushed off
+          the edge, a connected group vanishes and scores — bigger groups score more. The game ends when the
+          edge is completely full.
         </div>
       )}
 
@@ -866,28 +887,40 @@ export default function App() {
         {/* INTERACTIVE PLAYING BOARD */}
         <div className="relative flex flex-col items-center w-full max-w-lg">
 
-          {/* COMPACT HUD BAR — score, best, and next piece */}
-          <div className="w-full flex items-center justify-between gap-3 bg-slate-900 border border-slate-800 rounded-xl px-4 py-2.5 mb-3">
-            <div className="relative flex items-baseline gap-2">
-              <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Score</span>
-              <span className="text-xl font-mono font-black text-slate-100 tabular-nums">{score}</span>
-              {scoreFlash && (
-                <span
-                  key={scoreFlash.key}
-                  className="absolute -top-2 left-12 text-xs font-mono font-bold text-emerald-400 animate-bounce pointer-events-none"
-                >
-                  +{scoreFlash.amount}
-                </span>
-              )}
-              <span className="flex items-center gap-1 text-slate-600 ml-1">
-                <Trophy size={11} className="text-amber-400/80" />
-                <span className="text-[11px] font-mono">{highScore}</span>
-              </span>
+          {/* COMPACT HUD BAR — score, best, and next tile, as 2048's
+              stacked label-over-value pills. */}
+          <div className="w-full flex items-end justify-between gap-3 mb-3">
+            <div className="flex items-end gap-2">
+              <div className="relative rounded-md px-4 py-1.5 text-center min-w-[5.5rem]" style={{ backgroundColor: THEME.board }}>
+                <div className="text-[10px] uppercase tracking-widest font-bold" style={{ color: '#EEE4DA' }}>Score</div>
+                <div className="text-xl font-bold text-white tabular-nums leading-tight">{score}</div>
+                {scoreFlash && (
+                  <span
+                    key={scoreFlash.key}
+                    className="absolute -top-3 left-1/2 -translate-x-1/2 text-sm font-bold animate-bounce pointer-events-none"
+                    style={{ color: THEME.ink }}
+                  >
+                    +{scoreFlash.amount}
+                  </span>
+                )}
+              </div>
+              <div className="rounded-md px-4 py-1.5 text-center min-w-[5.5rem]" style={{ backgroundColor: THEME.board }}>
+                <div className="text-[10px] uppercase tracking-widest font-bold flex items-center justify-center gap-1" style={{ color: '#EEE4DA' }}>
+                  <Trophy size={10} /> Best
+                </div>
+                <div className="text-xl font-bold text-white tabular-nums leading-tight">{highScore}</div>
+              </div>
             </div>
 
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider hidden sm:inline">Next</span>
-              <div className={`w-7 h-7 rounded-full ${COLORS[nextColor]?.bg} border-2 ${COLORS[nextColor]?.border} shadow-md`} />
+            <div className="flex items-center gap-2 pb-1">
+              <span className="text-[10px] uppercase tracking-widest font-bold hidden sm:inline" style={{ color: THEME.inkSoft }}>Next</span>
+              <div
+                className="w-8 h-8 rounded-md"
+                style={{
+                  backgroundColor: COLORS[nextColor]?.hex,
+                  boxShadow: `inset 0 -3px 0 ${COLORS[nextColor]?.dark}`,
+                }}
+              />
             </div>
           </div>
 
@@ -898,13 +931,14 @@ export default function App() {
             {/* Bordered board box — inset within the stage, still clips its
                 own background/cells so the grid itself reads cleanly. */}
             <div
-              className="absolute bg-slate-950 border border-slate-800 rounded-xl overflow-hidden shadow-2xl"
+              className="absolute rounded-lg overflow-hidden"
               style={{
                 left: `${GRID_BOX_OFFSET_PCT}%`,
                 top: `${GRID_BOX_OFFSET_PCT}%`,
                 width: `${GRID_BOX_SIZE_PCT}%`,
                 height: `${GRID_BOX_SIZE_PCT}%`,
                 padding: `${BOARD_PAD_STAGE_PCT}%`,
+                backgroundColor: THEME.board,
               }}
             >
               {/* 8x8 GRID LAYOUT */}
@@ -922,26 +956,26 @@ export default function App() {
                       <div
                         key={`${r}-${c}`}
                         onClick={() => handleCellClick(r, c)}
-                        className={`
-                          relative rounded-lg flex items-center justify-center transition-colors select-none cursor-default
-                          ${isEdge 
-                            ? 'bg-slate-900/60 hover:bg-slate-800/80 border border-dashed border-slate-700/60 cursor-pointer' 
-                            : 'bg-slate-950 border border-slate-900/40'
-                          }
-                        `}
+                        className={`relative rounded-md flex items-center justify-center select-none ${isEdge ? 'cursor-pointer' : 'cursor-default'}`}
+                        style={{ backgroundColor: THEME.cell }}
                       >
-                        {/* Persistent preview of the next piece on every valid edge
-                            cell. Previously this only appeared on :hover, which
-                            meant touch/mobile players never saw it at all. */}
+                        {/* Persistent ghost of the next tile on every valid
+                            edge cell — this, rather than a dashed outline, is
+                            what marks a cell as playable, and it works on
+                            touch devices where :hover never fires. */}
                         {isEdge && !piece && !isResolving && !gameOver && (
                           <div
-                            className={`absolute inset-1 rounded-full ${COLORS[nextColor]?.bg} border ${COLORS[nextColor]?.border} opacity-25 hover:opacity-50 active:opacity-60 transition-opacity`}
+                            className="absolute inset-1 rounded-md opacity-25 hover:opacity-60 active:opacity-75 transition-opacity"
+                            style={{ backgroundColor: COLORS[nextColor]?.hex }}
                           />
                         )}
 
-                        {/* Cell highlight border for the last placed element */}
+                        {/* Cell highlight for the last placed tile */}
                         {isLastPlaced && (
-                          <div className="absolute inset-0 border border-amber-400/50 rounded-lg animate-pulse pointer-events-none" />
+                          <div
+                            className="absolute inset-0 rounded-md animate-pulse pointer-events-none"
+                            style={{ boxShadow: `inset 0 0 0 2px ${THEME.button}` }}
+                          />
                         )}
                       </div>
                     );
@@ -951,26 +985,35 @@ export default function App() {
 
               {/* LOSS / GAME OVER MODAL SCREEN */}
               {gameOver && (
-                <div className="absolute inset-0 bg-slate-950/90 backdrop-blur-sm flex flex-col items-center justify-center p-6 z-30 text-center">
-                  <h3 className="text-2xl font-black text-slate-100 tracking-tight mb-4">
-                    Game Over
+                <div
+                  className="absolute inset-0 flex flex-col items-center justify-center p-6 z-30 text-center"
+                  style={{ backgroundColor: 'rgba(238, 228, 218, 0.73)' }}
+                >
+                  <h3 className="text-4xl font-bold tracking-tight mb-4" style={{ color: THEME.ink }}>
+                    Game over
                   </h3>
 
-                  <div className="bg-slate-900 border border-slate-800 rounded-lg p-4 mb-6 w-full max-w-xs">
-                    <p className="text-3xl font-mono font-black text-amber-400">{score}</p>
+                  <div className="mb-6">
+                    <p className="text-5xl font-bold tabular-nums" style={{ color: THEME.ink }}>{score}</p>
                     {score >= highScore && score > 0 && (
-                      <span className="text-[10px] bg-amber-400/20 text-amber-400 px-2 py-0.5 rounded font-mono font-bold mt-2 inline-block animate-bounce">
-                        NEW BEST
+                      <span
+                        className="text-[10px] uppercase tracking-widest px-2 py-0.5 rounded font-bold mt-2 inline-block animate-bounce text-white"
+                        style={{ backgroundColor: THEME.button }}
+                      >
+                        New best
                       </span>
                     )}
                   </div>
 
                   <button
                     onClick={restartGame}
-                    className="w-full max-w-xs py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-lg transition-colors flex items-center justify-center space-x-2 shadow-lg hover:shadow-blue-600/20"
+                    className="w-full max-w-xs py-3 text-white font-bold rounded-md transition-colors flex items-center justify-center space-x-2"
+                    style={{ backgroundColor: THEME.button }}
+                    onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = THEME.buttonHover)}
+                    onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = THEME.button)}
                   >
                     <RotateCcw size={16} />
-                    <span>New Game</span>
+                    <span>New game</span>
                   </button>
                 </div>
               )}
@@ -1039,16 +1082,16 @@ export default function App() {
                         >
                           <div className="relative w-full h-full flex items-center justify-center" style={{ transform: `scale(${scale})`, transformOrigin: 'center' }}>
                             {hasUp && (
-                              <div className="absolute w-4 bg-slate-700 opacity-60" style={{ top: `-${BRIDGE_OVERSHOOT_PCT}%`, height: `calc(50% + ${BRIDGE_OVERSHOOT_PCT}%)` }} />
+                              <div className="absolute w-3 rounded-sm" style={{ backgroundColor: THEME.button, top: `-${BRIDGE_OVERSHOOT_PCT}%`, height: `calc(50% + ${BRIDGE_OVERSHOOT_PCT}%)` }} />
                             )}
                             {hasDown && (
-                              <div className="absolute w-4 bg-slate-700 opacity-60" style={{ bottom: `-${BRIDGE_OVERSHOOT_PCT}%`, height: `calc(50% + ${BRIDGE_OVERSHOOT_PCT}%)` }} />
+                              <div className="absolute w-3 rounded-sm" style={{ backgroundColor: THEME.button, bottom: `-${BRIDGE_OVERSHOOT_PCT}%`, height: `calc(50% + ${BRIDGE_OVERSHOOT_PCT}%)` }} />
                             )}
                             {hasLeft && (
-                              <div className="absolute h-4 bg-slate-700 opacity-60" style={{ left: `-${BRIDGE_OVERSHOOT_PCT}%`, width: `calc(50% + ${BRIDGE_OVERSHOOT_PCT}%)` }} />
+                              <div className="absolute h-3 rounded-sm" style={{ backgroundColor: THEME.button, left: `-${BRIDGE_OVERSHOOT_PCT}%`, width: `calc(50% + ${BRIDGE_OVERSHOOT_PCT}%)` }} />
                             )}
                             {hasRight && (
-                              <div className="absolute h-4 bg-slate-700 opacity-60" style={{ right: `-${BRIDGE_OVERSHOOT_PCT}%`, width: `calc(50% + ${BRIDGE_OVERSHOOT_PCT}%)` }} />
+                              <div className="absolute h-3 rounded-sm" style={{ backgroundColor: THEME.button, right: `-${BRIDGE_OVERSHOOT_PCT}%`, width: `calc(50% + ${BRIDGE_OVERSHOOT_PCT}%)` }} />
                             )}
                           </div>
                         </div>
@@ -1084,7 +1127,7 @@ export default function App() {
                                   mid tie-lock. */}
                               {isAttractor && (
                                 <div
-                                  className="absolute inset-0 rounded-full animate-ping opacity-40"
+                                  className="absolute inset-0 rounded-md animate-ping opacity-40"
                                   style={{ backgroundColor: colorConfig.hex, animationDuration: '1.8s' }}
                                 />
                               )}
@@ -1093,26 +1136,28 @@ export default function App() {
                                   nears the cull threshold, so drift reads as
                                   "danger" and not just "small." */}
                               {warning && (
-                                <div className="absolute -inset-1 rounded-full border-2 border-red-500/70 animate-pulse" />
+                                <div className="absolute -inset-1 rounded-md border-2 border-red-500/70 animate-pulse" />
                               )}
 
-                              {/* Outer Edge Circle — plain color, no labels */}
+                              {/* The tile itself — rounded square with a
+                                  darker bottom edge, 2048-style. */}
                               <div
-                                className={`
-                                  w-full h-full rounded-full ${colorConfig.bg} border-2 ${colorConfig.border}
-                                  shadow-md shadow-black/40 select-none relative
-                                `}
+                                className="w-full h-full rounded-md select-none relative"
+                                style={{
+                                  backgroundColor: colorConfig.hex,
+                                  boxShadow: `inset 0 -4px 0 ${colorConfig.dark}`,
+                                }}
                               />
 
                               {/* Pull direction indicator — sits on the edge
-                                  of the circle facing where the group would
+                                  of the tile facing where the group would
                                   slide this tick. */}
                               {hasDirectionalPull && (
                                 <div
-                                  className="absolute w-4 h-4 rounded-full bg-slate-900 border border-slate-600 flex items-center justify-center"
-                                  style={arrowStyle ?? undefined}
+                                  className="absolute w-4 h-4 rounded-full flex items-center justify-center"
+                                  style={{ ...(arrowStyle ?? {}), backgroundColor: THEME.ink }}
                                 >
-                                  <ChevronUp size={10} className="text-slate-200" />
+                                  <ChevronUp size={10} color="#FAF8EF" />
                                 </div>
                               )}
 
@@ -1121,8 +1166,11 @@ export default function App() {
                                   distance, so the group is frozen. Shown
                                   even while idle. */}
                               {isTieLocked && (
-                                <div className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-amber-500 border border-amber-300 flex items-center justify-center animate-pulse">
-                                  <AlertTriangle size={9} className="text-slate-950" />
+                                <div
+                                  className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full flex items-center justify-center animate-pulse"
+                                  style={{ backgroundColor: '#EDC22E' }}
+                                >
+                                  <AlertTriangle size={9} color="#776E65" />
                                 </div>
                               )}
                             </div>
@@ -1151,11 +1199,15 @@ export default function App() {
                           >
                             <div className="relative w-full h-full flex items-center justify-center" style={{ padding: '4px' }}>
                               <div
-                                className="absolute inset-0 rounded-full border-2 animate-piece-destroy-ring"
+                                className="absolute inset-0 rounded-md border-2 animate-piece-destroy-ring"
                                 style={{ borderColor: colorConfig?.hex }}
                               />
                               <div
-                                className={`w-full h-full rounded-full ${colorConfig?.bg} border-2 ${colorConfig?.border} animate-piece-destroy`}
+                                className="w-full h-full rounded-md animate-piece-destroy"
+                                style={{
+                                  backgroundColor: colorConfig?.hex,
+                                  boxShadow: `inset 0 -4px 0 ${colorConfig?.dark}`,
+                                }}
                               />
                             </div>
                           </div>
