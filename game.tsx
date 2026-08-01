@@ -1,9 +1,24 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef, type CSSProperties } from 'react';
-import { RotateCcw, HelpCircle, Trophy, AlertTriangle, ChevronUp, Volume2, VolumeX } from 'lucide-react';
+import { RotateCcw, HelpCircle, Trophy, ChevronUp, Volume2, VolumeX } from 'lucide-react';
+import {
+  GRID_SIZE,
+  REFERENCE_FORCE,
+  bindAdjacentPieces,
+  computeDestructionScore,
+  hasFreeOuterCell,
+  isOuterEdge,
+  planMoves,
+  resolveTick,
+  type ColorKey,
+  type Dir,
+  type Headings,
+  type Piece,
+} from './physics';
+
+// All the rules live in physics.ts — this file is the board, the HUD and
+// the animation timing, nothing more.
 
 // --- TYPES ---
-type ColorKey = 'R' | 'G' | 'B';
-
 interface ColorConfig {
   name: string;
   // Tile fill, and a slightly deeper shade of the same hue used for the
@@ -13,55 +28,11 @@ interface ColorConfig {
   dark: string;
 }
 
-interface Piece {
-  id: number;
-  color: ColorKey;
-  r: number;
-  c: number;
-  groupId: number;
-}
-
 interface DestroyedPiece {
   id: number;
   color: ColorKey;
   r: number;
   c: number;
-}
-
-interface Pull {
-  attractedGroupId: number;
-  pieceId: number;
-  dr: number;
-  dc: number;
-  dist: number;
-  attractorId: number;
-}
-
-interface Dir {
-  dr: number;
-  dc: number;
-}
-
-interface GroupInfo {
-  groupId: number;
-  dist: number;
-  isTieLocked: boolean;
-  attractorIds: number[];
-  sensingPieceIds: number[];
-  dr: number;
-  dc: number;
-}
-
-interface ValidGroupPull {
-  attractedGroupId: number;
-  dr: number;
-  dc: number;
-  dist: number;
-}
-
-interface Claim {
-  pull: ValidGroupPull;
-  affectedGroupIds: number[];
 }
 
 interface ScoreFlash {
@@ -70,7 +41,6 @@ interface ScoreFlash {
 }
 
 // --- GAME CONFIG & CONSTANTS ---
-const GRID_SIZE = 8;
 // Warm-toned red/green/blue chosen to sit on the tan board without
 // fighting it — same hues as before, pulled towards 2048's palette.
 const COLORS: Record<ColorKey, ColorConfig> = {
@@ -91,22 +61,6 @@ const THEME = {
   button: '#8F7A66',     // buttons + group link bridges
   buttonHover: '#9F8B77',
 } as const;
-
-// Attraction rules: Key attracts Value (Value is pulled towards Key).
-// The cycle is directional — a piece is pulled towards the nearest piece
-// of the color that attracts it, and two touching pieces bind whenever
-// EITHER of them attracts the other. Same-color pieces are inert to each
-// other and never move on their account.
-const ATTRACTION_RULES: Record<ColorKey, ColorKey> = {
-  R: 'G', // Red attracts Green
-  G: 'B', // Green attracts Blue
-  B: 'R', // Blue attracts Red
-};
-
-// Check if a cell is on the 8x8 outer edge
-const isOuterEdge = (r: number, c: number): boolean => {
-  return r === 0 || r === GRID_SIZE - 1 || c === 0 || c === GRID_SIZE - 1;
-};
 
 // Pieces are culled the instant they leave the visible board — no drift
 // buffer past the edge. MIN_COORD/MAX_COORD line up exactly with the
@@ -210,278 +164,15 @@ const getPieceVisualStyle = (dist: number) => {
   return { scale, opacity, warning };
 };
 
-// Pure helper function to bind adjacent pieces that have attraction relationships
-const bindAdjacentPieces = (currentPieces: Piece[]): { pieces: Piece[]; didBind: boolean } => {
-  let didBind = false;
-  const tempPieces = currentPieces.map(p => ({ ...p }));
-
-  let mergedAny = true;
-  while (mergedAny) {
-    mergedAny = false;
-    for (let i = 0; i < tempPieces.length; i++) {
-      for (let j = i + 1; j < tempPieces.length; j++) {
-        const p1 = tempPieces[i];
-        const p2 = tempPieces[j];
-
-        if (p1.groupId !== p2.groupId) {
-          // Check adjacency
-          const isAdjacent = (Math.abs(p1.r - p2.r) === 1 && p1.c === p2.c) || 
-                             (Math.abs(p1.c - p2.c) === 1 && p1.r === p2.r);
-
-          if (isAdjacent) {
-            // Pieces bind on contact when either one attracts the other,
-            // and same-colored pieces bind too — they don't pull each
-            // other, but they fuse into one group if they end up touching.
-            const p1AttractsP2 = ATTRACTION_RULES[p1.color] === p2.color;
-            const p2AttractsP1 = ATTRACTION_RULES[p2.color] === p1.color;
-            const sameColor = p1.color === p2.color;
-
-            if (p1AttractsP2 || p2AttractsP1 || sameColor) {
-              const targetGroupId = Math.min(p1.groupId, p2.groupId);
-              const sourceGroupId = Math.max(p1.groupId, p2.groupId);
-
-              tempPieces.forEach((p) => {
-                if (p.groupId === sourceGroupId) {
-                  p.groupId = targetGroupId;
-                }
-              });
-              mergedAny = true;
-              didBind = true;
-            }
-          }
-        }
-      }
-    }
-  }
-  return { pieces: tempPieces, didBind };
-};
-
-// Pure helper: scans from a piece in one direction, skipping over inert
-// pieces/empty cells, to find the nearest piece that actually attracts it.
-// Shared by the resolution engine and the live "who's attracting whom"
-// overlay, so both always agree on exactly the same rules.
-const findAttractorInDirection = (p: Piece, dr: number, dc: number, piecesList: Piece[]): { target: Piece; dist: number } | null => {
-  let currR = p.r + dr;
-  let currC = p.c + dc;
-  let dist = 0;
-  while (currR >= MIN_COORD && currR <= MAX_COORD && currC >= MIN_COORD && currC <= MAX_COORD) {
-    dist += 1;
-    const hit = piecesList.find((item) => item.r === currR && item.c === currC);
-    if (hit) {
-      if (hit.groupId !== p.groupId && ATTRACTION_RULES[hit.color] === p.color) {
-        return { target: hit, dist };
-      }
-      // Inert relative to p — doesn't block the view, keep scanning.
-    }
-    currR += dr;
-    currC += dc;
-  }
-  return null;
-};
-
-const PULL_DIRS: Dir[] = [
-  { dr: -1, dc: 0 },
-  { dr: 1, dc: 0 },
-  { dr: 0, dc: -1 },
-  { dr: 0, dc: 1 }
-];
-
-// Pure helper: for every group on the board, finds its closest attractor(s)
-// this tick. Returns:
-//  - groupInfo: per-group breakdown (attractor piece ids, tie-locked or
-//    not, pull direction) — used to drive the live highlight overlay even
-//    while the board is idle or frozen in a tie-lock.
-//  - validGroupPulls: flattened list of groups with a single unambiguous
-//    closest pull — exactly what the resolution engine acts on.
-const computeGroupPulls = (piecesList: Piece[]): { groupInfo: Record<number, GroupInfo>; validGroupPulls: ValidGroupPull[] } => {
-  const pulls: Pull[] = [];
-  piecesList.forEach((p) => {
-    PULL_DIRS.forEach(({ dr, dc }) => {
-      const found = findAttractorInDirection(p, dr, dc, piecesList);
-      if (found) {
-        pulls.push({ attractedGroupId: p.groupId, pieceId: p.id, dr, dc, dist: found.dist, attractorId: found.target.id });
-      }
-    });
-  });
-
-  const byGroup: Record<number, Pull[]> = {};
-  pulls.forEach((pull) => {
-    if (!byGroup[pull.attractedGroupId]) byGroup[pull.attractedGroupId] = [];
-    byGroup[pull.attractedGroupId].push(pull);
-  });
-
-  const groupInfo: Record<number, GroupInfo> = {};
-  const validGroupPulls: ValidGroupPull[] = [];
-
-  Object.keys(byGroup).forEach((gId) => {
-    const groupList = byGroup[Number(gId)];
-    groupList.sort((a, b) => a.dist - b.dist);
-    const bestDist = groupList[0].dist;
-    const ties = groupList.filter((p) => p.dist === bestDist);
-
-    const uniqueDirs: Dir[] = [];
-    ties.forEach((t) => {
-      if (!uniqueDirs.some((d) => d.dr === t.dr && d.dc === t.dc)) {
-        uniqueDirs.push({ dr: t.dr, dc: t.dc });
-      }
-    });
-
-    const isTieLocked = uniqueDirs.length > 1;
-    const attractorIds = Array.from(new Set(ties.map((t) => t.attractorId)));
-    // The piece(s) within the group whose own scan produced one of the
-    // pulls at this group's best distance — relevant for both the tie
-    // badge (when tied) and the directional arrow (when not), so neither
-    // ends up plastered across every piece in the group.
-    const sensingPieceIds = Array.from(new Set(ties.map((t) => t.pieceId)));
-
-    groupInfo[Number(gId)] = {
-      groupId: Number(gId),
-      dist: bestDist,
-      isTieLocked,
-      attractorIds,
-      sensingPieceIds,
-      dr: isTieLocked ? 0 : uniqueDirs[0].dr,
-      dc: isTieLocked ? 0 : uniqueDirs[0].dc
-    };
-
-    if (!isTieLocked) {
-      validGroupPulls.push({ attractedGroupId: Number(gId), dr: uniqueDirs[0].dr, dc: uniqueDirs[0].dc, dist: bestDist });
-    }
-  });
-
-  return { groupInfo, validGroupPulls };
-};
-
-// Push rule: a moving group shoves whatever group is directly in front of
-// it, and if THAT group is in turn blocked by yet another group, the chain
-// keeps extending (breadth-first) until every group that would have to
-// move is accounted for. Without this chaining, a group three or more
-// deep in a line would be left out of the affected set entirely — it
-// wouldn't move, but the piece in front of it would still be assigned a
-// tentative position right on top of it, which is exactly the kind of gap
-// that let same-colored pieces visually overlap ("fuse") instead of
-// cleanly blocking or binding.
-const getPushSet = (startGroupId: number, dr: number, dc: number, currentPieces: Piece[]): number[] => {
-  const affectedGroupIds = new Set<number>([startGroupId]);
-  let frontier = [startGroupId];
-
-  while (frontier.length > 0) {
-    const nextFrontier: number[] = [];
-    frontier.forEach((gId) => {
-      const groupPieces = currentPieces.filter((p) => p.groupId === gId);
-      groupPieces.forEach((piece) => {
-        const nextR = piece.r + dr;
-        const nextC = piece.c + dc;
-        const blockingPiece = currentPieces.find((other) => other.r === nextR && other.c === nextC);
-
-        if (blockingPiece && !affectedGroupIds.has(blockingPiece.groupId)) {
-          affectedGroupIds.add(blockingPiece.groupId);
-          nextFrontier.push(blockingPiece.groupId);
-        }
-      });
-    });
-    frontier = nextFrontier;
-  }
-
-  return Array.from(affectedGroupIds);
-};
-
-// Pure function: given the current board, works out exactly which group(s)
-// would actually move THIS tick and in which direction. The resolver keeps
-// only claims that do not conflict with another claim and ignores the
-// heavier chain-reaction loop from the previous version.
-const resolveWinningPulls = (piecesList: Piece[]): Claim[] => {
-  const { validGroupPulls } = computeGroupPulls(piecesList);
-  if (validGroupPulls.length === 0) return [];
-
-  const globalMinDist = Math.min(...validGroupPulls.map((p) => p.dist));
-  const candidatePulls = validGroupPulls.filter((p) => p.dist === globalMinDist);
-
-  const claims: Claim[] = candidatePulls.map((pull) => ({
-    pull,
-    affectedGroupIds: getPushSet(pull.attractedGroupId, pull.dr, pull.dc, piecesList)
-  }));
-
-  const groupDirClaims: Record<number, Set<string>> = {};
-  claims.forEach(({ pull, affectedGroupIds }) => {
-    const dirKey = `${pull.dr},${pull.dc}`;
-    affectedGroupIds.forEach((gId) => {
-      if (!groupDirClaims[gId]) groupDirClaims[gId] = new Set();
-      groupDirClaims[gId].add(dirKey);
-    });
-  });
-
-  const conflictedGroupIds = new Set(
-    Object.keys(groupDirClaims)
-      .filter((gId) => groupDirClaims[Number(gId)].size > 1)
-      .map(Number)
-  );
-
-  let survivors = claims.filter(
-    ({ affectedGroupIds }) => !affectedGroupIds.some((gId) => conflictedGroupIds.has(gId))
-  );
-
-  if (survivors.length > 0) {
-    const tentative: { groupId: number; r: number; c: number }[] = [];
-    piecesList.forEach((p) => {
-      const claim = survivors.find((s) => s.affectedGroupIds.includes(p.groupId));
-      tentative.push(claim
-        ? { groupId: p.groupId, r: p.r + claim.pull.dr, c: p.c + claim.pull.dc }
-        : { groupId: p.groupId, r: p.r, c: p.c });
-    });
-
-    const occupied: Record<string, number> = {};
-    const collidingGroupIds = new Set<number>();
-    tentative.forEach((p) => {
-      const key = `${p.r},${p.c}`;
-      if (occupied[key] !== undefined && occupied[key] !== p.groupId) {
-        collidingGroupIds.add(p.groupId);
-        collidingGroupIds.add(occupied[key]);
-      }
-      occupied[key] = p.groupId;
-    });
-
-    if (collidingGroupIds.size > 0) {
-      survivors = survivors.filter(
-        ({ affectedGroupIds }) => !affectedGroupIds.some((gId) => collidingGroupIds.has(gId))
-      );
-    }
-  }
-
-  return survivors;
-};
-
-// --- SCORING ---
-// Base points awarded per piece in a destroyed group, before the
-// triangular group-size scaling and multi-group combo multiplier below.
-const BASE_POINTS_PER_PIECE = 10;
-// Extra multiplier added per additional group destroyed within the same
-// turn (e.g. 3 separate single-piece groups destroyed together nets a
-// 1 + 0.25*2 = 1.5x multiplier on their combined base total).
-const COMBO_MULTIPLIER_STEP = 0.25;
-
-// Turns a list of destroyed-group sizes (piece counts) from a single
-// turn's resolution cascade into that turn's score. Each group's points
-// scale TRIANGULARLY with its size (n*(n+1)/2) rather than linearly, so a
-// single bound group of N pieces destroyed together is always worth
-// strictly more than N pieces trickling off the board one at a time
-// across N separate turns — even though the latter necessarily takes at
-// least N turns to rack up the same piece count. Destroying several
-// separate groups within the same turn is rewarded too, but more
-// modestly, via a flat multiplier applied to the turn's combined total.
-const computeDestructionScore = (groupSizes: number[]): number => {
-  if (groupSizes.length === 0) return 0;
-  const basePoints = groupSizes.reduce(
-    (sum, n) => sum + (BASE_POINTS_PER_PIECE * n * (n + 1)) / 2,
-    0
-  );
-  const comboMultiplier = 1 + COMBO_MULTIPLIER_STEP * (groupSizes.length - 1);
-  return Math.round(basePoints * comboMultiplier);
-};
-
 export default function App() {
   // --- STATE ---
   const [pieces, setPieces] = useState<Piece[]>([]); // List of { id, color, r, c, groupId }
+  // Each group's heading — the direction it last actually moved. Only
+  // populated while a turn is resolving; cleared the moment the cascade
+  // settles, so the board you make decisions against never carries
+  // invisible momentum. Momentum decides only what happens DURING the
+  // cascade you just triggered, which you can watch.
+  const [headings, setHeadings] = useState<Headings>({});
   const [nextColor, setNextColor] = useState<ColorKey>('R');
   const [score, setScore] = useState(0);
   const [highScore, setHighScore] = useState(() => {
@@ -526,7 +217,7 @@ export default function App() {
   useEffect(() => {
     return () => {
       if (audioCtxRef.current) {
-        audioCtxRef.current.close().catch(() => {});
+        audioCtxRef.current.close().catch(() => { });
       }
     };
   }, []);
@@ -620,6 +311,7 @@ export default function App() {
 
   const restartGame = () => {
     setPieces([]);
+    setHeadings({});
     setScore(0);
     setGameOver(false);
     setGameOverReason('');
@@ -635,122 +327,67 @@ export default function App() {
     return list.find((p) => p.r === r && p.c === c);
   }, [pieces]);
 
-  // Main attraction calculation and single step execution
-  const runResolutionStep = useCallback(async (currentPieces: Piece[]) => {
-    let hasMovement = false;
-    let nextPieces = [...currentPieces];
+  // One tick of the cascade. All the decision-making lives in resolveTick;
+  // everything here is presentation — sounds, burst animations, scoring and
+  // scheduling the next tick.
+  const runResolutionStep = useCallback(
+    (currentPieces: Piece[], currentHeadings: Headings) => {
+      const result = resolveTick(currentPieces, currentHeadings);
 
-    // Identify each group's closest attractor(s) this tick, looking past
-    // inert clutter, with the same board-wide tie-lock rule as the live
-    // overlay: a group with more than one unique direction pulling at the
-    // minimum distance freezes instead of moving. resolveWinningPulls is
-    // the same function the live overlay uses, so what actually moves and
-    // what the arrows predicted are guaranteed to match.
-    const survivingClaims = resolveWinningPulls(nextPieces);
+      if (!result.moved) {
+        // Nothing wanted to move, so the turn is over. Note this is now a
+        // genuine rest state rather than a deadlock: planMoves guarantees
+        // that if any group had a direction at all, at least one of them
+        // moved. Getting here means every group is either balanced and
+        // stationary or has nothing attracting it.
+        setPieces(result.pieces);
+        setHeadings({});
+        setIsResolving(false);
 
-    if (survivingClaims.length > 0) {
-          const moveByGroupId: Record<number, Dir> = {};
-          survivingClaims.forEach(({ pull, affectedGroupIds }) => {
-            affectedGroupIds.forEach((gId) => {
-              moveByGroupId[gId] = { dr: pull.dr, dc: pull.dc };
-            });
-          });
+        const turnScore = computeDestructionScore(turnDestroyedGroupSizesRef.current);
+        if (turnScore > 0) setScore((prev) => prev + turnScore);
+        turnDestroyedGroupSizesRef.current = [];
 
-          nextPieces = nextPieces.map((p) => {
-            const move = moveByGroupId[p.groupId];
-            if (move) {
-              return { ...p, r: p.r + move.dr, c: p.c + move.dc };
-            }
-            return p;
-          });
-          playSound('slide');
-          hasMovement = true;
-
-          // Cull any group with a piece that has left the visible board —
-          // pieces vanish the instant they cross the edge, and the whole
-          // bound group goes with them. Each destroyed group's size is
-          // tallied for this turn's score (see computeDestructionScore),
-          // so losing a big bound group all at once is always worth more
-          // than losing the same pieces individually across several turns.
-          const escapedGroupIds = new Set(
-            nextPieces
-              .filter((p) => p.r < MIN_COORD || p.r > MAX_COORD || p.c < MIN_COORD || p.c > MAX_COORD)
-              .map((p) => p.groupId)
-          );
-          if (escapedGroupIds.size > 0) {
-            escapedGroupIds.forEach((gId) => {
-              const groupSize = nextPieces.filter((p) => p.groupId === gId).length;
-              turnDestroyedGroupSizesRef.current.push(groupSize);
-            });
-
-            // Snapshot the exact color/position of every piece about to be
-            // culled so a brief "destroyed" burst animation can play right
-            // where each one vanished, purely as a visual overlay layered on
-            // top — it has no bearing on the authoritative board state
-            // computed below.
-            const destroyedSnapshots: DestroyedPiece[] = nextPieces
-              .filter((p) => escapedGroupIds.has(p.groupId))
-              .map((p) => ({ id: p.id, color: p.color, r: p.r, c: p.c }));
-            setDestroyingPieces((prev) => [...prev, ...destroyedSnapshots]);
-            setTimeout(() => {
-              setDestroyingPieces((prev) =>
-                prev.filter((d) => !destroyedSnapshots.some((s) => s.id === d.id))
-              );
-            }, 500);
-
-            nextPieces = nextPieces.filter((p) => !escapedGroupIds.has(p.groupId));
-            playSound('vanish');
-          }
-
-          // --- BINDING PHASE (POST-MOVEMENT) ---
-          const bindResult = bindAdjacentPieces(nextPieces);
-          if (bindResult.didBind) {
-            playSound('bind');
-            nextPieces = bindResult.pieces;
-          }
+        if (!hasFreeOuterCell(result.pieces)) {
+          setGameOver(true);
+          setGameOverReason('No space left on the outer edge to place pieces!');
+          playSound('lose');
         }
-        // If survivingClaims is empty, every pull at the minimum distance was
-        // entangled in a conflict with another — a board-wide tie-lock.
-        // Nothing moves this tick; hasMovement stays false and control
-        // returns to the player.
+        return;
+      }
 
-    // Update board state
-    setPieces(nextPieces);
+      playSound('slide');
 
-    if (hasMovement) {
-      // Queue next tick of resolution animation
+      if (result.destroyed.length > 0) {
+        turnDestroyedGroupSizesRef.current.push(...result.destroyedGroupSizes);
+
+        // Ghost snapshots so a burst can play exactly where each piece
+        // vanished. Purely decorative — the authoritative board is
+        // result.pieces.
+        const snapshots: DestroyedPiece[] = result.destroyed.map((p) => ({
+          id: p.id,
+          color: p.color,
+          r: p.r,
+          c: p.c,
+        }));
+        setDestroyingPieces((prev) => [...prev, ...snapshots]);
+        setTimeout(() => {
+          setDestroyingPieces((prev) => prev.filter((d) => !snapshots.some((s) => s.id === d.id)));
+        }, 500);
+        playSound('vanish');
+      }
+
+      if (result.didBind) playSound('bind');
+
+      setPieces(result.pieces);
+      setHeadings(result.headings);
+
       setTimeout(() => {
-        runResolutionStep(nextPieces);
+        runResolutionStep(result.pieces, result.headings);
       }, 250);
-    } else {
-      // Done resolving, return control to player
-      setIsResolving(false);
-      // Turn complete — tally every group destroyed across this whole
-      // cascade (it can span several resolution ticks) into one turn
-      // score, applying the size/combo scaling from computeDestructionScore.
-      const turnScore = computeDestructionScore(turnDestroyedGroupSizesRef.current);
-      if (turnScore > 0) {
-        setScore((prev) => prev + turnScore);
-      }
-      turnDestroyedGroupSizesRef.current = [];
-      // Check if board outer edge has absolutely no empty spaces
-      let freeOuterCellExists = false;
-      for (let r = 0; r < GRID_SIZE; r++) {
-        for (let c = 0; c < GRID_SIZE; c++) {
-          if (isOuterEdge(r, c) && !nextPieces.some((p) => p.r === r && p.c === c)) {
-            freeOuterCellExists = true;
-            break;
-          }
-        }
-      }
-
-      if (!freeOuterCellExists) {
-        setGameOver(true);
-        setGameOverReason('No space left on the outer edge to place pieces!');
-        playSound('lose');
-      }
-    }
-  }, [soundEnabled]);
+    },
+    [soundEnabled]
+  );
 
   // Click handler to place active piece on the board
   const handleCellClick = (r: number, c: number) => {
@@ -771,11 +408,14 @@ export default function App() {
     };
 
     const updatedPieces = [...pieces, newPiece];
-    
-    // --- BINDING PHASE (IMMEDIATE PRE-ATTRACTION PRE-RESOLUTION) ---
+
+    // --- BINDING PHASE (IMMEDIATE, BEFORE ANY ATTRACTION) ---
     const bindResult = bindAdjacentPieces(updatedPieces);
     const resolvedInitialPieces = bindResult.pieces;
-    
+    // Every turn starts from rest. Nothing on the board carries momentum
+    // into a placement — headings only exist inside a cascade.
+    const initialHeadings: Headings = {};
+
     if (bindResult.didBind) {
       // Trigger binding sound effect instantly if they immediately link up
       setTimeout(() => {
@@ -784,6 +424,7 @@ export default function App() {
     }
 
     setPieces(resolvedInitialPieces);
+    setHeadings(initialHeadings);
     setLastPlacedCell({ r, c });
 
     // Lock board and trigger resolution cascade
@@ -794,7 +435,7 @@ export default function App() {
     rollNextColor();
 
     setTimeout(() => {
-      runResolutionStep(resolvedInitialPieces);
+      runResolutionStep(resolvedInitialPieces, initialHeadings);
     }, 300);
   };
 
@@ -811,33 +452,43 @@ export default function App() {
     return neighbor && neighbor.groupId === piece.groupId;
   };
 
-  // Live "who's attracting whom" state, recomputed from the current board
-  // any time it changes — including while idle and while frozen in a
-  // tie-lock, which is exactly when this is most useful to see.
-  const attractionState = useMemo<Record<number, GroupInfo>>(() => computeGroupPulls(pieces).groupInfo, [pieces]);
+  // Exactly what the engine would do on the next tick — same function,
+  // same inputs — so the preview can never disagree with what happens.
+  const plan = useMemo(() => planMoves(pieces, headings), [pieces, headings]);
+
   const attractingPieceIds = useMemo(() => {
     const ids = new Set<number>();
-    Object.values(attractionState).forEach((info) => {
-      info.attractorIds.forEach((id) => ids.add(id));
-    });
+    Object.values(plan.forces).forEach((f) => f.attractorIds.forEach((id) => ids.add(id)));
     return ids;
-  }, [attractionState]);
+  }, [plan]);
 
-  // Which group(s) would actually move THIS tick, and in which direction —
-  // the same global-min-distance + conflict resolution runResolutionStep
-  // uses to commit moves. A group can have a perfectly valid closest pull
-  // (present in attractionState) without being the one that wins the
-  // board-wide race, so the arrow overlay checks this instead of just
-  // "does this group have any pull at all."
-  const winningPullByGroupId = useMemo<Record<number, Dir>>(() => {
-    const map: Record<number, Dir> = {};
-    resolveWinningPulls(pieces).forEach(({ pull }) => {
-      // Only the originally-attracted group gets an arrow — groups merely
-      // dragged along via a push chain didn't sense anything themselves.
-      map[pull.attractedGroupId] = { dr: pull.dr, dc: pull.dc };
+  // One arrow per moving group, parked on the piece at the leading edge of
+  // the slide, so a long group gets a single clear "this end goes first"
+  // marker instead of an arrow on every tile. Opacity tracks how hard the
+  // group is being pulled, which makes the strongest-first ordering
+  // visible: the boldest arrow is the one that commits first.
+  const arrowByPieceId = useMemo(() => {
+    const map: Record<number, { dir: Dir; coasting: boolean; strength: number }> = {};
+    plan.accepted.forEach(({ groupId, dir, coasting, magnitude }) => {
+      const groupPieces = pieces.filter((p) => p.groupId === groupId);
+      if (groupPieces.length === 0) return;
+      let lead = groupPieces[0];
+      let bestProjection = lead.r * dir.dr + lead.c * dir.dc;
+      groupPieces.forEach((p) => {
+        const projection = p.r * dir.dr + p.c * dir.dc;
+        if (projection > bestProjection) {
+          bestProjection = projection;
+          lead = p;
+        }
+      });
+      map[lead.id] = {
+        dir,
+        coasting,
+        strength: Math.min(1, Math.max(0.45, magnitude / REFERENCE_FORCE)),
+      };
     });
     return map;
-  }, [pieces]);
+  }, [plan, pieces]);
 
   return (
     <div
@@ -874,11 +525,9 @@ export default function App() {
       {/* HOW TO PLAY — short, plain-language, collapsible */}
       {showTutorial && (
         <div className="max-w-lg w-full mx-auto px-4 pb-3 text-sm leading-relaxed" style={{ color: THEME.inkSoft }}>
-          Drop tiles on the outer edge. Red pulls green, green pulls blue, blue pulls red — attracted tiles
-          slide toward their attractor and connect on contact, and matching colors connect too. Pushed off
-          the edge, a connected group vanishes and scores — bigger groups score more. The game ends when the
-          edge is completely full.
-        </div>
+          Red pulls green, green pulls blue, blue pulls red. <br />
+          Tiles connect on contact. <br />
+          Score points by taking tiles off the edges. </div>
       )}
 
       {/* MAIN GAME LAYOUT */}
@@ -1044,26 +693,22 @@ export default function App() {
                   const boxPercent = boxStageUnits * CELL_STAGE_PCT;
 
                   const isAttractor = attractingPieceIds.has(p.id);
-                  const groupPull = attractionState[p.groupId];
-                  const isGroupTieLocked = groupPull?.isTieLocked;
-                  const isSensingPiece = groupPull?.sensingPieceIds?.includes(p.id);
-                  const isTieLocked = isGroupTieLocked && isSensingPiece;
-                  const winningPull = winningPullByGroupId[p.groupId];
-                  const hasDirectionalPull = !isGroupTieLocked && !!winningPull && isSensingPiece;
+                  const arrow = arrowByPieceId[p.id];
+                  const hasDirectionalPull = !!arrow;
 
-                  const arrowStyle: CSSProperties | null = hasDirectionalPull && winningPull
-                    ? winningPull.dr === -1
+                  const arrowStyle: CSSProperties | null = arrow
+                    ? arrow.dir.dr === -1
                       ? { top: '-7px', left: '50%', transform: 'translateX(-50%) rotate(0deg)' }
-                      : winningPull.dr === 1
-                      ? { bottom: '-7px', left: '50%', transform: 'translateX(-50%) rotate(180deg)' }
-                      : winningPull.dc === -1
-                      ? { left: '-7px', top: '50%', transform: 'translateY(-50%) rotate(-90deg)' }
-                      : { right: '-7px', top: '50%', transform: 'translateY(-50%) rotate(90deg)' }
+                      : arrow.dir.dr === 1
+                        ? { bottom: '-7px', left: '50%', transform: 'translateX(-50%) rotate(180deg)' }
+                        : arrow.dir.dc === -1
+                          ? { left: '-7px', top: '50%', transform: 'translateY(-50%) rotate(-90deg)' }
+                          : { right: '-7px', top: '50%', transform: 'translateY(-50%) rotate(90deg)' }
                     : null;
 
                   return {
                     p, colorConfig, hasUp, hasDown, hasLeft, hasRight, dist, scale, opacity, warning,
-                    leftPercent, topPercent, boxPercent, isAttractor, isTieLocked, hasDirectionalPull, arrowStyle
+                    leftPercent, topPercent, boxPercent, isAttractor, arrow, hasDirectionalPull, arrowStyle
                   };
                 });
 
@@ -1106,7 +751,7 @@ export default function App() {
                         while still staying safely above the links layer's
                         z-index: 0 even at the furthest drift distance. */}
                     <div className="absolute inset-0">
-                      {renderInfo.map(({ p, colorConfig, dist, scale, opacity, warning, leftPercent, topPercent, boxPercent, isAttractor, isTieLocked, hasDirectionalPull, arrowStyle }) => (
+                      {renderInfo.map(({ p, colorConfig, dist, scale, opacity, warning, leftPercent, topPercent, boxPercent, isAttractor, arrow, hasDirectionalPull, arrowStyle }) => (
                         <div
                           key={p.id}
                           className="absolute transition-all duration-300 ease-out flex items-center justify-center"
@@ -1149,28 +794,24 @@ export default function App() {
                                 }}
                               />
 
-                              {/* Pull direction indicator — sits on the edge
-                                  of the tile facing where the group would
-                                  slide this tick. */}
-                              {hasDirectionalPull && (
+                              {/* Pull direction indicator — sits on the
+                                  leading edge of the group, facing where it
+                                  slides this tick. Filled when a net pull is
+                                  driving it; hollow when the pulls cancelled
+                                  and the group is coasting on momentum,
+                                  which is the one case where the board alone
+                                  doesn't explain the move. */}
+                              {hasDirectionalPull && arrow && (
                                 <div
                                   className="absolute w-4 h-4 rounded-full flex items-center justify-center"
-                                  style={{ ...(arrowStyle ?? {}), backgroundColor: THEME.ink }}
+                                  style={{
+                                    ...(arrowStyle ?? {}),
+                                    backgroundColor: arrow.coasting ? THEME.page : THEME.ink,
+                                    border: arrow.coasting ? `2px solid ${THEME.ink}` : 'none',
+                                    opacity: arrow.coasting ? 1 : arrow.strength,
+                                  }}
                                 >
-                                  <ChevronUp size={10} color="#FAF8EF" />
-                                </div>
-                              )}
-
-                              {/* Tie-lock badge — this is the confusing
-                                  case: two+ competing attractors at equal
-                                  distance, so the group is frozen. Shown
-                                  even while idle. */}
-                              {isTieLocked && (
-                                <div
-                                  className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full flex items-center justify-center animate-pulse"
-                                  style={{ backgroundColor: '#EDC22E' }}
-                                >
-                                  <AlertTriangle size={9} color="#776E65" />
+                                  <ChevronUp size={10} color={arrow.coasting ? THEME.ink : '#FAF8EF'} />
                                 </div>
                               )}
                             </div>

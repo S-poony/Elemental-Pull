@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "tsc physics.ts tests/physics.test.ts --outDir .test-build --module commonjs --target es2022 --moduleResolution node --strict --skipLibCheck && node -e \"require('fs').writeFileSync('.test-build/package.json','{\\\"type\\\":\\\"commonjs\\\"}')\" && node .test-build/tests/physics.test.js"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",
