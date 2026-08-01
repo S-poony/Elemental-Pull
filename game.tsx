@@ -79,7 +79,7 @@ const MAX_MARGIN_CELLS = 0;
 const OFFSET_SOFTNESS = 2.2;
 const compressedOffset = (trueDist: number): number => (MAX_MARGIN_CELLS * trueDist) / (trueDist + OFFSET_SOFTNESS);
 
-// Total stage size in "cell units": the 8x8 board plus compression margin
+// Total stage size in "cell units": the board plus compression margin
 // on both sides. The bordered board itself only occupies GRID_BOX_SIZE_PCT
 // of the stage — the rest is room for off-grid pieces to render into.
 const STAGE_CELLS = GRID_SIZE + 2 * MAX_MARGIN_CELLS;
@@ -577,10 +577,17 @@ export default function App() {
                 backgroundColor: THEME.board,
               }}
             >
-              {/* 8x8 GRID LAYOUT */}
+              {/* GRID LAYOUT — GRID_SIZE x GRID_SIZE */}
               <div
-                className="w-full h-full grid grid-cols-8 grid-rows-8 relative"
-                style={{ gap: `${CELL_GAP_GRID_PCT}%` }}
+                // Template comes from GRID_SIZE rather than Tailwind's
+                // grid-cols-N, which would have to be edited in lockstep
+                // with the constant and silently mis-render if it wasn't.
+                className="w-full h-full grid relative"
+                style={{
+                  gap: `${CELL_GAP_GRID_PCT}%`,
+                  gridTemplateColumns: `repeat(${GRID_SIZE}, minmax(0, 1fr))`,
+                  gridTemplateRows: `repeat(${GRID_SIZE}, minmax(0, 1fr))`,
+                }}
               >
                 {Array.from({ length: GRID_SIZE }).map((_, r) =>
                   Array.from({ length: GRID_SIZE }).map((_, c) => {

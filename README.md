@@ -1,6 +1,6 @@
 # Reactor-Attractor
 
-A small game. You drop tiles onto an 8×8 board, they attract each other, and you score by how much motion your placement sets off. You lose when there's nowhere legal left to drop.
+A small game. You drop tiles onto a 5×5 board, they attract each other, and you score by how much motion your placement sets off. You lose when there's nowhere legal left to drop.
 
 ## The rules
 

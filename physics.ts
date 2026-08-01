@@ -76,7 +76,11 @@ export interface MovePlan {
 }
 
 // --- BOARD CONSTANTS ---
-export const GRID_SIZE = 8;
+// Was 8. Everything downstream reads this constant — the force table, the
+// placement scan, the grid template in game.tsx — so the size is a genuine
+// parameter, with one caveat: FORCE_UNIT below must stay divisible by d²
+// for every d up to GRID_SIZE, which holds for any size up to 8.
+export const GRID_SIZE = 5;
 
 // Attraction is a three-way cycle: key attracts value, so the value is the
 // one that moves. Same-color pieces are inert to each other — they never

@@ -91,11 +91,11 @@ console.log('\nscenario: opposite standoff (old engine froze here)');
   // Reds at distance 2 above and below cancel; the red at 3 to the left is
   // then the only thing left, so it decides.
   const b = board([
-    '...R....',
-    '........',
-    'R..G....',
-    '........',
-    '...R....',
+    '...R.',
+    '.....',
+    'R..G.',
+    '.....',
+    '...R.',
   ]);
   const f = computeGroupForces(b)[groupAt(b, 2, 3)];
   eq('vertical pull cancels exactly', f.fy, 0);
@@ -104,26 +104,40 @@ console.log('\nscenario: opposite standoff (old engine froze here)');
   eq('not coasting — a real net force', f.coasting, false);
 }
 
-console.log('\nscenario: crowd vs close');
+console.log('\nscenario: one attractor pulls a whole column');
 {
-  // Three reds at distance 3 out-pull a single red at distance 2.
+  // This used to be "crowd vs close": three reds at distance 3 out-pulling
+  // one at distance 2. That board needs six columns (c-3 through c+2) and
+  // no longer fits — the pure-weight version of the comparison is still
+  // checked above, in 'force weights'.
+  //
+  // What a 5x5 does show is subtler and worth pinning: nothing blocks
+  // sight, so the red below is seen by all three tiles of the green column
+  // at once, at distances 2, 3 and 4. Three weak sightings of one attractor
+  // (298900) beat the single distance-2 sighting on the other axis
+  // (176400), even though that one is nearer than two of them.
   const b = board([
-    '........',
-    'R..G.R..',
-    'R..G....',
-    'R..G....',
+    '..G..',
+    '..G.R',
+    '..G..',
+    '.....',
+    '..R..',
   ]);
-  eq('crowd wins', dirOf(b, 1, 3), LEFT);
+  const f = computeGroupForces(b)[groupAt(b, 1, 2)];
+  eq('the column is one group', new Set(b.filter((p) => p.color === 'G').map((p) => p.groupId)).size, 1);
+  eq('seen three times down the column', f.fy, forceAtDistance(2) + forceAtDistance(3) + forceAtDistance(4));
+  eq('seen once across', f.fx, forceAtDistance(2));
+  eq('stacked sightings win', dirOf(b, 1, 2), DOWN);
 }
 
 console.log('\nscenario: momentum');
 {
   const b = board([
-    '...R....',
-    '........',
-    '...G....',
-    '........',
-    '...R....',
+    '...R.',
+    '.....',
+    '...G.',
+    '.....',
+    '...R.',
   ]);
   const f = computeGroupForces(b)[groupAt(b, 2, 3)];
   eq('perfectly balanced', [f.fx, f.fy], [0, 0]);
@@ -145,7 +159,7 @@ console.log('\nregression: nothing attracting means nothing moves');
   // empty board around it. Every placement then drifted off across the
   // board under its own steam. Momentum is a tiebreak between real pulls
   // and nothing else.
-  const alone = board(['........', '...G....']);
+  const alone = board(['.....', '...G.']);
   const g = groupAt(alone, 1, 3);
   eq('a lone tile has no pulls', computeGroupForces(alone)[g].attractorIds.length, 0);
   eq('a lone tile rests', computeGroupForces(alone)[g].dir, null);
@@ -154,7 +168,7 @@ console.log('\nregression: nothing attracting means nothing moves');
 
   // Two inert tiles: same color, so they neither pull each other nor bind
   // unless touching. Nothing should budge, heading or not.
-  const inert = board(['G.......', '........', '........', 'G.......']);
+  const inert = board(['G....', '.....', '.....', 'G....']);
   const plan = planMoves(inert, {
     [groupAt(inert, 0, 0)]: DOWN,
     [groupAt(inert, 3, 0)]: UP,
@@ -164,7 +178,7 @@ console.log('\nregression: nothing attracting means nothing moves');
   // And a group that has bound to its attractor: bound pieces are one
   // group and stop pulling each other, so with nothing else on the board
   // the pair must come to rest rather than sail on.
-  const bound = board(['........', '..GR....']);
+  const bound = board(['.....', '..GR.']);
   const bg = groupAt(bound, 1, 2);
   eq('bound pair is a single group', new Set(bound.map((p) => p.groupId)).size, 1);
   eq('bound pair with momentum still stops', computeGroupForces(bound, { [bg]: RIGHT })[bg].dir, null);
@@ -179,7 +193,7 @@ console.log('\nregression: a cascade always comes to rest');
 {
   // A green chasing a red across an otherwise empty board must bind and
   // stop, not carry the pair onward and off the edge.
-  let pieces = board(['........', 'G....R..']);
+  let pieces = board(['.....', 'G...R']);
   let headings: Headings = {};
   let ticks = 0;
   while (ticks < 50) {
@@ -200,9 +214,9 @@ console.log('\nscenario: diagonal tie ladder');
   // Equal pull up and left. Nothing in the board picture can break this,
   // so the tiebreak ladder has to.
   const b = board([
-    '..R.....',
-    '........',
-    'R.G.....',
+    '..R..',
+    '.....',
+    'R.G..',
   ]);
   const g = groupAt(b, 2, 2);
   const f = computeGroupForces(b)[g];
@@ -249,7 +263,7 @@ console.log('\ninvariant: touching always binds, so nothing is ever shoved');
   const rnd = mulberry(555);
   let nonSingleton = 0;
   for (let i = 0; i < 2000; i++) {
-    const b = randomBoard(rnd, 2 + Math.floor(rnd() * 24));
+    const b = randomBoard(rnd, fuzzCount(rnd));
     [UP, DOWN, LEFT, RIGHT].forEach((d) => {
       new Set(b.map((p) => p.groupId)).forEach((g) => {
         if (getPushSet(g, d.dr, d.dc, b).length !== 1) nonSingleton++;
@@ -267,7 +281,7 @@ console.log('\nstructural: a tick never freezes');
   let violations = 0;
   const rnd = mulberry(12345);
   for (let i = 0; i < 4000; i++) {
-    const b = randomBoard(rnd, 2 + Math.floor(rnd() * 22));
+    const b = randomBoard(rnd, fuzzCount(rnd));
     const headings = randomHeadings(b, rnd);
     const plan = planMoves(b, headings);
     const anyWants = Object.values(plan.forces).some((f) => f.dir !== null);
@@ -284,7 +298,7 @@ console.log('\nstructural: ticks stay legal');
   let doubleMoves = 0;
   const rnd = mulberry(999);
   for (let i = 0; i < 3000; i++) {
-    const b = randomBoard(rnd, 2 + Math.floor(rnd() * 22));
+    const b = randomBoard(rnd, fuzzCount(rnd));
     const headings = randomHeadings(b, rnd);
     const plan = planMoves(b, headings);
     const next = applyMoves(b, plan.moveByGroup);
@@ -315,7 +329,7 @@ console.log('\nstructural: movement score counts exactly what moved');
   let motionUnscored = 0;
   const rnd = mulberry(31337);
   for (let i = 0; i < 3000; i++) {
-    const b = randomBoard(rnd, 2 + Math.floor(rnd() * 22));
+    const b = randomBoard(rnd, fuzzCount(rnd));
     const headings = randomHeadings(b, rnd);
     const res = resolveTick(b, headings);
 
@@ -348,7 +362,7 @@ console.log('\ninvariant: a legal placement never binds on arrival');
   let illegalAllowed = 0;
   const rnd = mulberry(20260801);
   for (let i = 0; i < 2000; i++) {
-    const b = randomBoard(rnd, 1 + Math.floor(rnd() * 20));
+    const b = randomBoard(rnd, fuzzCount(rnd));
     const free = legalCells(b);
     if (free.length === 0) continue;
     const [r, c] = free[Math.floor(rnd() * free.length)];
@@ -382,7 +396,7 @@ console.log('\nstructural: cascades terminate');
   let runaway = 0;
   const rnd = mulberry(4242);
   for (let i = 0; i < 1500; i++) {
-    let pieces = randomBoard(rnd, 2 + Math.floor(rnd() * 26));
+    let pieces = randomBoard(rnd, fuzzCount(rnd));
     let headings: Headings = randomHeadings(pieces, rnd);
     let ticks = 0;
     while (ticks < CAP) {
@@ -404,7 +418,7 @@ console.log('\nstructural: determinism');
   const rnd = mulberry(777);
   let mismatches = 0;
   for (let i = 0; i < 500; i++) {
-    const b = randomBoard(rnd, 2 + Math.floor(rnd() * 20));
+    const b = randomBoard(rnd, fuzzCount(rnd));
     const h = randomHeadings(b, rnd);
     const a = JSON.stringify(planMoves(b, h).moveByGroup);
     const c = JSON.stringify(planMoves(b.slice().reverse(), h).moveByGroup);
@@ -516,7 +530,7 @@ console.log('\ncomparison: how often does a board that wants to move actually mo
   let newStuck = 0;
   let oldTieLocked = 0;
   for (let i = 0; i < 6000; i++) {
-    const b = randomBoard(rnd, 2 + Math.floor(rnd() * 24));
+    const b = randomBoard(rnd, fuzzCount(rnd));
     const plan = planMoves(b, {});
     const anyAttraction = Object.values(plan.forces).some((f) => f.attractorIds.length > 0);
     if (!anyAttraction) continue;
@@ -612,7 +626,9 @@ console.log('\nfuzz: full games');
   console.log(`  turns                     ${totalTurns}`);
   console.log(`  turns with no motion      ${deadTurns} (${((100 * deadTurns) / totalTurns).toFixed(1)}%, all verified idle not locked)`);
   console.log(`  pieces cleared            ${totalCleared} (${(totalCleared / totalTurns).toFixed(2)} per turn)`);
-  console.log(`  mean tiles on the board   ${(occupancy / totalTurns).toFixed(1)} of 64`);
+  console.log(
+    `  mean tiles on the board   ${(occupancy / totalTurns).toFixed(1)} of ${GRID_SIZE * GRID_SIZE}`
+  );
   console.log(`  longest cascade           ${longestCascade} ticks`);
   check('no crashes', crashes === 0, `${crashes} crashes`);
   check('games actually clear pieces', totalCleared > 0);
@@ -688,6 +704,14 @@ console.log('\ncomparison: did the rewrite make the game easier?');
 }
 
 // --- helpers -------------------------------------------------------------
+// Fuzz boards are sized as a fraction of the board's area, not a fixed
+// count: the old literals (2..26 pieces) were tuned for 64 cells and would
+// ask for more tiles than a 5x5 board has, quietly capping out at a packed
+// board and testing only the densest case.
+function fuzzCount(rnd: () => number): number {
+  return 2 + Math.floor(rnd() * Math.max(2, Math.round(GRID_SIZE * GRID_SIZE * 0.35)));
+}
+
 // Every cell a player could legally drop on, in the fuzz harnesses' order.
 function legalCells(pieces: Piece[]): Array<[number, number]> {
   const out: Array<[number, number]> = [];
