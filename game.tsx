@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef, type CSSProperties } from 'react';
-import { Play, RotateCcw, HelpCircle, Trophy, Sparkles, AlertTriangle, ChevronRight, ChevronUp, Volume2, VolumeX } from 'lucide-react';
+import { RotateCcw, HelpCircle, Trophy, AlertTriangle, ChevronUp, Volume2, VolumeX } from 'lucide-react';
 
 // --- TYPES ---
 type ColorKey = 'R' | 'G' | 'B';
@@ -7,7 +7,6 @@ type ColorKey = 'R' | 'G' | 'B';
 interface ColorConfig {
   name: string;
   hex: string;
-  text: string;
   bg: string;
   border: string;
 }
@@ -71,12 +70,16 @@ interface ScoreFlash {
 // --- GAME CONFIG & CONSTANTS ---
 const GRID_SIZE = 8;
 const COLORS: Record<ColorKey, ColorConfig> = {
-  R: { name: 'Red', hex: '#EF4444', text: 'text-red-500', bg: 'bg-red-500', border: 'border-red-600' },
-  G: { name: 'Green', hex: '#22C55E', text: 'text-green-500', bg: 'bg-green-500', border: 'border-green-600' },
-  B: { name: 'Blue', hex: '#3B82F6', text: 'text-blue-500', bg: 'bg-blue-500', border: 'border-blue-600' },
+  R: { name: 'Red', hex: '#EF4444', bg: 'bg-red-500', border: 'border-red-600' },
+  G: { name: 'Green', hex: '#22C55E', bg: 'bg-green-500', border: 'border-green-600' },
+  B: { name: 'Blue', hex: '#3B82F6', bg: 'bg-blue-500', border: 'border-blue-600' },
 };
 
-// Attraction rules: Key attracts Value (Value is pulled towards Key)
+// Attraction rules: Key attracts Value (Value is pulled towards Key).
+// The cycle is directional — a piece is pulled towards the nearest piece
+// of the color that attracts it, and two touching pieces bind whenever
+// EITHER of them attracts the other. Same-color pieces are inert to each
+// other and never move on their account.
 const ATTRACTION_RULES: Record<ColorKey, ColorKey> = {
   R: 'G', // Red attracts Green
   G: 'B', // Green attracts Blue
@@ -209,7 +212,7 @@ const bindAdjacentPieces = (currentPieces: Piece[]): { pieces: Piece[]; didBind:
                              (Math.abs(p1.c - p2.c) === 1 && p1.r === p2.r);
 
           if (isAdjacent) {
-            // Check if there is an attraction relationship between them
+            // Pieces bind on contact when either one attracts the other
             const p1AttractsP2 = ATTRACTION_RULES[p1.color] === p2.color;
             const p2AttractsP1 = ATTRACTION_RULES[p2.color] === p1.color;
 
@@ -329,21 +332,36 @@ const computeGroupPulls = (piecesList: Piece[]): { groupInfo: Record<number, Gro
   return { groupInfo, validGroupPulls };
 };
 
-// Simple push rule: a moving group can shove one neighboring group out of
-// the way, but it does not recursively chain through the whole board.
+// Push rule: a moving group shoves whatever group is directly in front of
+// it, and if THAT group is in turn blocked by yet another group, the chain
+// keeps extending (breadth-first) until every group that would have to
+// move is accounted for. Without this chaining, a group three or more
+// deep in a line would be left out of the affected set entirely — it
+// wouldn't move, but the piece in front of it would still be assigned a
+// tentative position right on top of it, which is exactly the kind of gap
+// that let same-colored pieces visually overlap ("fuse") instead of
+// cleanly blocking or binding.
 const getPushSet = (startGroupId: number, dr: number, dc: number, currentPieces: Piece[]): number[] => {
   const affectedGroupIds = new Set<number>([startGroupId]);
-  const startPieces = currentPieces.filter((p) => p.groupId === startGroupId);
+  let frontier = [startGroupId];
 
-  startPieces.forEach((piece) => {
-    const nextR = piece.r + dr;
-    const nextC = piece.c + dc;
-    const blockingPiece = currentPieces.find((other) => other.r === nextR && other.c === nextC);
+  while (frontier.length > 0) {
+    const nextFrontier: number[] = [];
+    frontier.forEach((gId) => {
+      const groupPieces = currentPieces.filter((p) => p.groupId === gId);
+      groupPieces.forEach((piece) => {
+        const nextR = piece.r + dr;
+        const nextC = piece.c + dc;
+        const blockingPiece = currentPieces.find((other) => other.r === nextR && other.c === nextC);
 
-    if (blockingPiece && blockingPiece.groupId !== startGroupId) {
-      affectedGroupIds.add(blockingPiece.groupId);
-    }
-  });
+        if (blockingPiece && !affectedGroupIds.has(blockingPiece.groupId)) {
+          affectedGroupIds.add(blockingPiece.groupId);
+          nextFrontier.push(blockingPiece.groupId);
+        }
+      });
+    });
+    frontier = nextFrontier;
+  }
 
   return Array.from(affectedGroupIds);
 };
@@ -803,185 +821,53 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans select-none antialiased selection:bg-slate-800">
-      
-      {/* HEADER */}
-      <header className="border-b border-slate-800 bg-slate-900 px-6 py-4 flex items-center justify-between sticky top-0 z-10">
-        <div className="flex items-center space-x-3">
-          <div className="w-9 h-9 bg-slate-800 border border-slate-700 rounded-lg flex items-center justify-center text-blue-500 font-extrabold text-xl tracking-tight">
-            Ø
-          </div>
-          <div>
-            <h1 className="font-mono text-lg font-bold tracking-tight">ORBITALS & ATTRACTORS</h1>
-            <p className="text-xs text-slate-400 font-mono">Turn-based slide & bind physical puzzle</p>
-          </div>
-        </div>
 
-        <div className="flex items-center space-x-4">
+      {/* HEADER — just a title and three icon buttons, no tagline */}
+      <header className="px-4 py-4 flex items-center justify-between max-w-lg w-full mx-auto">
+        <h1 className="text-2xl font-black tracking-tight text-slate-100">Attractor</h1>
+        <div className="flex items-center gap-2">
           <button
             onClick={() => setSoundEnabled(!soundEnabled)}
-            className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition-colors border border-slate-700"
+            className="p-2 bg-slate-900 hover:bg-slate-800 text-slate-300 rounded-lg transition-colors border border-slate-800"
             title={soundEnabled ? 'Mute' : 'Unmute'}
           >
             {soundEnabled ? <Volume2 size={18} /> : <VolumeX size={18} />}
           </button>
           <button
             onClick={() => setShowTutorial(!showTutorial)}
-            className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition-colors border border-slate-700 flex items-center space-x-1.5 text-sm font-mono"
+            className="p-2 bg-slate-900 hover:bg-slate-800 text-slate-300 rounded-lg transition-colors border border-slate-800"
+            title="How to play"
           >
-            <HelpCircle size={16} />
-            <span className="hidden md:inline">Rules</span>
+            <HelpCircle size={18} />
           </button>
           <button
             onClick={restartGame}
-            className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition-colors border border-slate-700 flex items-center space-x-1.5 text-sm font-mono"
+            className="p-2 bg-slate-900 hover:bg-slate-800 text-slate-300 rounded-lg transition-colors border border-slate-800"
+            title="New game"
           >
-            <RotateCcw size={16} />
-            <span className="hidden md:inline">Reset</span>
+            <RotateCcw size={18} />
           </button>
         </div>
       </header>
 
-      {/* TUTORIAL OVERLAY / PANEL */}
+      {/* HOW TO PLAY — short, plain-language, collapsible */}
       {showTutorial && (
-        <div className="bg-slate-900 border-b border-slate-800 p-6 transition-all">
-          <div className="max-w-4xl mx-auto">
-            <div className="flex justify-between items-start mb-4">
-              <h2 className="text-md font-mono font-bold tracking-wide uppercase text-slate-300 flex items-center space-x-2">
-                <Sparkles size={16} className="text-amber-400" />
-                <span>How to Play & Game Mechanics</span>
-              </h2>
-              <button
-                onClick={() => setShowTutorial(false)}
-                className="text-xs text-slate-400 hover:text-slate-200 bg-slate-800 hover:bg-slate-700 border border-slate-700 px-2.5 py-1 rounded font-mono transition-colors"
-              >
-                Hide Rules
-              </button>
-            </div>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 text-sm text-slate-300">
-              <div className="bg-slate-950 p-4 rounded-lg border border-slate-800">
-                <span className="text-amber-400 font-mono font-bold text-xs block mb-1">RULE 1</span>
-                <p className="font-mono text-xs leading-relaxed">
-                  You can only place the randomly drawn pieces on the <strong className="text-slate-100">8x8 outer edge</strong> cells (highlighted on grid). Pieces slide into the inner 6x6 area through magnetic forces.
-                </p>
-              </div>
-
-              <div className="bg-slate-950 p-4 rounded-lg border border-slate-800">
-                <span className="text-amber-400 font-mono font-bold text-xs block mb-1">RULE 2</span>
-                <p className="font-mono text-xs leading-relaxed mb-2">
-                  Magnetism cycle dictates physical attraction in same row or column:
-                </p>
-                <div className="flex flex-col space-y-1 font-mono text-xs">
-                  <div className="flex items-center space-x-2">
-                    <span className="w-3 h-3 rounded-full bg-red-500 inline-block"></span>
-                    <span className="text-red-400 font-semibold">Red</span>
-                    <ChevronRight size={10} className="text-slate-500" />
-                    <span className="text-green-400 font-semibold">Green</span>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <span className="w-3 h-3 rounded-full bg-green-500 inline-block"></span>
-                    <span className="text-green-400 font-semibold">Green</span>
-                    <ChevronRight size={10} className="text-slate-500" />
-                    <span className="text-blue-400 font-semibold">Blue</span>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <span className="w-3 h-3 rounded-full bg-blue-500 inline-block"></span>
-                    <span className="text-blue-400 font-semibold">Blue</span>
-                    <ChevronRight size={10} className="text-slate-500" />
-                    <span className="text-red-400 font-semibold">Red</span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="bg-slate-950 p-4 rounded-lg border border-slate-800">
-                <span className="text-amber-400 font-mono font-bold text-xs block mb-1">RULE 3</span>
-                <p className="font-mono text-xs leading-relaxed">
-                  Attracted pieces <strong className="text-slate-100">slide and push</strong> obstacles in their way, even past pieces that don't attract them. Touching an attractor <strong className="text-slate-100">binds them together</strong>. Any piece pushed <strong className="text-slate-100">off the grid vanishes instantly</strong>, destroying its whole bound group.
-                </p>
-              </div>
-
-              <div className="bg-slate-950 p-4 rounded-lg border border-slate-800">
-                <span className="text-amber-400 font-mono font-bold text-xs block mb-1">RULE 4</span>
-                <p className="font-mono text-xs leading-relaxed">
-                  Destroying pieces is how you score. Points scale up sharply with the size of the bound group destroyed at once, and destroying <strong className="text-slate-100">multiple groups in the same turn</strong> adds a combo multiplier on top. The game ends when there's <strong className="text-slate-100">no space left on the outer edge</strong> to place a new piece.
-                </p>
-              </div>
-            </div>
-          </div>
+        <div className="max-w-lg w-full mx-auto px-4 pb-2 text-sm text-slate-400 leading-relaxed">
+          Drop pieces on the outer edge. Red pulls green, green pulls blue, blue pulls red — attracted pieces
+          slide toward their attractor and connect on contact.
+          Pushed off the edge, a connected group vanishes and scores — bigger groups score more. The game ends
+          when the edge is completely full.
         </div>
       )}
 
       {/* MAIN GAME LAYOUT */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 py-8 flex flex-col lg:flex-row gap-8 items-center justify-center">
-        
-        {/* STATS & CONTROLS SIDEBAR */}
-        <div className="w-full lg:w-80 flex flex-col space-y-4">
-          
-          {/* STATS CARD */}
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 flex flex-col space-y-4">
-            <div className="flex justify-between items-center border-b border-slate-800 pb-3">
-              <span className="text-slate-400 font-mono text-xs uppercase tracking-wider">Session Score</span>
-              <div className="flex items-center space-x-1.5 text-amber-400">
-                <Trophy size={14} />
-                <span className="text-xs font-mono font-bold">BEST: {highScore}</span>
-              </div>
-            </div>
-            
-            <div className="flex justify-between items-baseline">
-              <span className="text-3xl font-mono font-black text-slate-100">{score}</span>
-              <span className="text-xs text-slate-500 font-mono">points scored</span>
-            </div>
-          </div>
-
-          {/* NEXT DRAW CARD */}
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 flex flex-col space-y-3">
-            <span className="text-slate-400 font-mono text-xs uppercase tracking-wider block">Upcoming Piece</span>
-            
-            <div className="flex items-center space-x-4 bg-slate-950 p-3 rounded-lg border border-slate-800">
-              <div className={`w-12 h-12 rounded-full ${COLORS[nextColor]?.bg} border-2 ${COLORS[nextColor]?.border} flex items-center justify-center text-slate-950 font-mono font-black text-xl shadow-lg animate-pulse`}>
-                {nextColor}
-              </div>
-              <div className="font-mono">
-                <p className="text-xs text-slate-400">Placing Active:</p>
-                <p className="text-sm font-bold" style={{ color: COLORS[nextColor]?.hex }}>
-                  {COLORS[nextColor]?.name} Particle
-                </p>
-              </div>
-            </div>
-
-            {/* Quick attraction legend */}
-            <div className="mt-2 text-[11px] font-mono text-slate-400 bg-slate-950 p-2.5 rounded border border-slate-800/50 space-y-1">
-              <p className="text-xs text-slate-300 border-b border-slate-800/60 pb-1 mb-1 font-bold">Magnetism Cycle:</p>
-              <p>🔴 Red pulls 🟢 Green</p>
-              <p>🟢 Green pulls 🔵 Blue</p>
-              <p>🔵 Blue pulls 🔴 Red</p>
-            </div>
-          </div>
-
-          {/* SYSTEM STATUS */}
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 font-mono text-xs space-y-2">
-            <div className="flex justify-between items-center">
-              <span className="text-slate-400">State Engine:</span>
-              <span className={`font-bold uppercase tracking-wide px-2 py-0.5 rounded text-[10px] ${isResolving ? 'bg-amber-500/20 text-amber-400' : 'bg-green-500/20 text-green-400'}`}>
-                {isResolving ? 'Resolving Pulls...' : 'Awaiting Input'}
-              </span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-slate-400">Total Bound Groups:</span>
-              <span className="text-slate-200">
-                {new Set(pieces.map((p) => p.groupId)).size}
-              </span>
-            </div>
-          </div>
-        </div>
+      <main className="flex-1 w-full mx-auto px-4 py-2 flex flex-col items-center justify-center">
 
         {/* INTERACTIVE PLAYING BOARD */}
-        <div className="relative flex-1 flex flex-col items-center w-full">
+        <div className="relative flex flex-col items-center w-full max-w-lg">
 
-          {/* COMPACT HUD BAR — score, best, and next piece live right above
-              the board at every screen size, so neither requires scrolling
-              back up to the sidebar after a placement. */}
-          <div className="w-full max-w-lg flex items-center justify-between gap-3 bg-slate-900 border border-slate-800 rounded-xl px-4 py-2.5 mb-3">
+          {/* COMPACT HUD BAR — score, best, and next piece */}
+          <div className="w-full flex items-center justify-between gap-3 bg-slate-900 border border-slate-800 rounded-xl px-4 py-2.5 mb-3">
             <div className="relative flex items-baseline gap-2">
               <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Score</span>
               <span className="text-xl font-mono font-black text-slate-100 tabular-nums">{score}</span>
@@ -1001,9 +887,7 @@ export default function App() {
 
             <div className="flex items-center gap-2">
               <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider hidden sm:inline">Next</span>
-              <div className={`w-8 h-8 rounded-full ${COLORS[nextColor]?.bg} border-2 ${COLORS[nextColor]?.border} flex items-center justify-center text-slate-950 font-mono font-black text-xs shadow-md`}>
-                {nextColor}
-              </div>
+              <div className={`w-7 h-7 rounded-full ${COLORS[nextColor]?.bg} border-2 ${COLORS[nextColor]?.border} shadow-md`} />
             </div>
           </div>
 
@@ -1046,20 +930,13 @@ export default function App() {
                           }
                         `}
                       >
-                        {/* Grid Position Coordinates (Very subtle) */}
-                        <span className="absolute bottom-0.5 right-1 text-[8px] font-mono text-slate-700/60 pointer-events-none">
-                          {r},{c}
-                        </span>
-
                         {/* Persistent preview of the next piece on every valid edge
                             cell. Previously this only appeared on :hover, which
                             meant touch/mobile players never saw it at all. */}
                         {isEdge && !piece && !isResolving && !gameOver && (
                           <div
-                            className={`absolute inset-1 rounded-full ${COLORS[nextColor]?.bg} border ${COLORS[nextColor]?.border} opacity-25 hover:opacity-50 active:opacity-60 transition-opacity flex items-center justify-center font-mono font-bold text-[10px] text-slate-950`}
-                          >
-                            {nextColor}
-                          </div>
+                            className={`absolute inset-1 rounded-full ${COLORS[nextColor]?.bg} border ${COLORS[nextColor]?.border} opacity-25 hover:opacity-50 active:opacity-60 transition-opacity`}
+                          />
                         )}
 
                         {/* Cell highlight border for the last placed element */}
@@ -1075,34 +952,25 @@ export default function App() {
               {/* LOSS / GAME OVER MODAL SCREEN */}
               {gameOver && (
                 <div className="absolute inset-0 bg-slate-950/90 backdrop-blur-sm flex flex-col items-center justify-center p-6 z-30 text-center">
-                  <div className="w-16 h-16 bg-red-500/20 text-red-500 rounded-full flex items-center justify-center mb-4 border border-red-500/30">
-                    <AlertTriangle size={32} />
-                  </div>
-                  
-                  <h3 className="text-2xl font-mono font-black text-slate-100 tracking-tight mb-2">
-                    MISSION TERMINATED
+                  <h3 className="text-2xl font-black text-slate-100 tracking-tight mb-4">
+                    Game Over
                   </h3>
-                  
-                  <p className="text-sm font-mono text-slate-400 max-w-xs mb-6">
-                    {gameOverReason}
-                  </p>
 
                   <div className="bg-slate-900 border border-slate-800 rounded-lg p-4 mb-6 w-full max-w-xs">
-                    <p className="text-xs text-slate-500 font-mono uppercase">Your Final Score</p>
-                    <p className="text-3xl font-mono font-black text-amber-400 mt-1">{score}</p>
+                    <p className="text-3xl font-mono font-black text-amber-400">{score}</p>
                     {score >= highScore && score > 0 && (
                       <span className="text-[10px] bg-amber-400/20 text-amber-400 px-2 py-0.5 rounded font-mono font-bold mt-2 inline-block animate-bounce">
-                        NEW RECORD SET!
+                        NEW BEST
                       </span>
                     )}
                   </div>
 
                   <button
                     onClick={restartGame}
-                    className="w-full max-w-xs py-3 bg-blue-600 hover:bg-blue-500 text-white font-mono font-bold rounded-lg transition-colors flex items-center justify-center space-x-2 shadow-lg hover:shadow-blue-600/20"
+                    className="w-full max-w-xs py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-lg transition-colors flex items-center justify-center space-x-2 shadow-lg hover:shadow-blue-600/20"
                   >
                     <RotateCcw size={16} />
-                    <span>Deploy New Core</span>
+                    <span>New Game</span>
                   </button>
                 </div>
               )}
@@ -1228,21 +1096,13 @@ export default function App() {
                                 <div className="absolute -inset-1 rounded-full border-2 border-red-500/70 animate-pulse" />
                               )}
 
-                              {/* Outer Edge Circle */}
+                              {/* Outer Edge Circle — plain color, no labels */}
                               <div
                                 className={`
                                   w-full h-full rounded-full ${colorConfig.bg} border-2 ${colorConfig.border}
-                                  flex flex-col items-center justify-center text-slate-950 font-mono font-extrabold text-sm md:text-base
                                   shadow-md shadow-black/40 select-none relative
                                 `}
-                              >
-                                {p.color}
-
-                                {/* Sub-label showing internal group membership ID to aid puzzle transparency */}
-                                <span className="text-[7px] text-slate-950/60 block -mt-1 font-mono font-normal">
-                                  g{p.groupId}
-                                </span>
-                              </div>
+                              />
 
                               {/* Pull direction indicator — sits on the edge
                                   of the circle facing where the group would
@@ -1308,19 +1168,8 @@ export default function App() {
             </div>
           </div>
 
-          {/* Quick instructions subtext below the playing grid */}
-          <div className="mt-4 text-center">
-            <p className="text-xs font-mono text-slate-500">
-              Only place particles inside the dashed border cells. Sliding cascades resolve automatically.
-            </p>
-          </div>
         </div>
       </main>
-
-      {/* FOOTER */}
-      <footer className="border-t border-slate-800/80 bg-slate-900/40 py-4 px-6 text-center font-mono text-[10px] text-slate-500 mt-auto">
-        Orbital System Control Board — Designed with strict polarity vectors.
-      </footer>
     </div>
   );
 }
