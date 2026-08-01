@@ -11,6 +11,7 @@ import {
   applyMoves,
   bindAdjacentPieces,
   computeGroupForces,
+  computeMovementScore,
   forceAtDistance,
   getPushSet,
   isOnBoard,
@@ -300,6 +301,41 @@ console.log('\nstructural: ticks stay legal');
   }
   check('no two pieces ever share an on-board cell', overlaps === 0, `${overlaps} overlaps`);
   check('no group moves twice in one tick', doubleMoves === 0, `${doubleMoves} double moves`);
+}
+
+// Points come from motion, so the count the score is built on has to be
+// exactly the pieces that changed cell — including the ones that changed
+// cell by leaving the board, which are culled before resolveTick returns
+// and so can't be recovered from the result's piece list.
+console.log('\nstructural: movement score counts exactly what moved');
+{
+  let mismatched = 0;
+  let restScored = 0;
+  let motionUnscored = 0;
+  const rnd = mulberry(31337);
+  for (let i = 0; i < 3000; i++) {
+    const b = randomBoard(rnd, 2 + Math.floor(rnd() * 22));
+    const headings = randomHeadings(b, rnd);
+    const res = resolveTick(b, headings);
+
+    // Displacement measured independently of the tick's own bookkeeping.
+    const before = new Map(b.map((p) => [p.id, `${p.r},${p.c}`]));
+    const after = new Map<number, string>();
+    res.pieces.forEach((p) => after.set(p.id, `${p.r},${p.c}`));
+    res.destroyed.forEach((p) => after.set(p.id, `${p.r},${p.c}`));
+    let displaced = 0;
+    before.forEach((pos, id) => {
+      const now = after.get(id);
+      if (now !== undefined && now !== pos) displaced++;
+    });
+
+    if (res.movedPieceCount !== displaced) mismatched++;
+    if (!res.moved && computeMovementScore(res.movedPieceCount) !== 0) restScored++;
+    if (res.moved && computeMovementScore(res.movedPieceCount) <= 0) motionUnscored++;
+  }
+  check('movedPieceCount equals actual displacement', mismatched === 0, `${mismatched} mismatches`);
+  check('a settled tick scores nothing', restScored === 0, `${restScored} scored at rest`);
+  check('a tick that moved always scores', motionUnscored === 0, `${motionUnscored} unscored`);
 }
 
 console.log('\nstructural: cascades terminate');

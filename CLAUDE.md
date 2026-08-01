@@ -21,6 +21,8 @@ Guidance for Claude Code working in this repo. The game's rules are in `README.m
 
 **Every colour pair binds on contact, so nothing is ever pushed.** R–G, G–B and B–R each attract one way, and matching colours bind too, so *any* two touching tiles fuse. Two distinct groups therefore can never be adjacent at rest, so a one-cell move can never land on another group, so `getPushSet` always returns a single group. The push machinery is a dormant guard in case binding is ever loosened; a test asserts the singleton property. Don't write UI copy or docs claiming groups shove each other.
 
+**Score is motion, and it's paid per tick.** `computeMovementScore(result.movedPieceCount)` is added in `runResolutionStep` on every tick that moved, not banked until the cascade settles — the HUD number climbing has to match the tiles actually sliding. `movedPieceCount` is measured *before* the off-board cull, because a group's last move off the edge is the payoff move; count it after and the biggest slides silently score short. This replaced a triangular destruction score (points per destroyed group, scaled by size), which rewarded hoarding one large group and paid nothing for the chain reactions the physics exists to produce. Explosions are still how the edge stays clear, but they're worth zero.
+
 **A tick never freezes.** In `planMoves`, the first (strongest) candidate can't be rejected: its push set is closed by construction and nothing is committed yet to collide with. So if any group has a direction, at least one moves. Preserve this if you touch the greedy loop — it's the property the whole redesign rests on, and it's asserted directly in the suite.
 
 ## Testing

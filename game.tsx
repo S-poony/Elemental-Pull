@@ -4,7 +4,7 @@ import {
   GRID_SIZE,
   REFERENCE_FORCE,
   bindAdjacentPieces,
-  computeDestructionScore,
+  computeMovementScore,
   hasFreeOuterCell,
   isOuterEdge,
   planMoves,
@@ -196,13 +196,6 @@ export default function App() {
   // For generating unique IDs
   const pieceIdCounter = useRef(0);
 
-  // Accumulates the size (piece count) of every group destroyed so far
-  // during the CURRENT turn's resolution cascade (a single placement can
-  // trigger several resolution ticks before control returns to the
-  // player). Reset at the start of each turn and scored as a whole once
-  // the cascade settles — see computeDestructionScore.
-  const turnDestroyedGroupSizesRef = useRef<number[]>([]);
-
   // Single reused AudioContext (browsers cap the number of concurrent
   // contexts, so creating a new one per sound effect breaks audio after
   // enough placements)
@@ -318,7 +311,6 @@ export default function App() {
     setIsResolving(false);
     setLastPlacedCell(null);
     setDestroyingPieces([]);
-    turnDestroyedGroupSizesRef.current = [];
     rollNextColor();
   };
 
@@ -344,10 +336,6 @@ export default function App() {
         setHeadings({});
         setIsResolving(false);
 
-        const turnScore = computeDestructionScore(turnDestroyedGroupSizesRef.current);
-        if (turnScore > 0) setScore((prev) => prev + turnScore);
-        turnDestroyedGroupSizesRef.current = [];
-
         if (!hasFreeOuterCell(result.pieces)) {
           setGameOver(true);
           setGameOverReason('No space left on the outer edge to place pieces!');
@@ -358,9 +346,13 @@ export default function App() {
 
       playSound('slide');
 
-      if (result.destroyed.length > 0) {
-        turnDestroyedGroupSizesRef.current.push(...result.destroyedGroupSizes);
+      // Motion is the score: paid out tick by tick as it happens, not banked
+      // until the cascade settles, so the number climbing matches the tiles
+      // moving on screen.
+      const tickScore = computeMovementScore(result.movedPieceCount);
+      if (tickScore > 0) setScore((prev) => prev + tickScore);
 
+      if (result.destroyed.length > 0) {
         // Ghost snapshots so a burst can play exactly where each piece
         // vanished. Purely decorative — the authoritative board is
         // result.pieces.
@@ -428,9 +420,6 @@ export default function App() {
     setLastPlacedCell({ r, c });
 
     // Lock board and trigger resolution cascade
-    // Starting a new turn — clear last turn's destroyed-group tally so
-    // this turn's score is computed fresh once its cascade settles.
-    turnDestroyedGroupSizesRef.current = [];
     setIsResolving(true);
     rollNextColor();
 
@@ -527,7 +516,7 @@ export default function App() {
         <div className="max-w-lg w-full mx-auto px-4 pb-3 text-sm leading-relaxed" style={{ color: THEME.inkSoft }}>
           Red pulls green, green pulls blue, blue pulls red. <br />
           Tiles connect on contact. <br />
-          Score points by taking tiles off the edges. </div>
+          Score 1 point for every tile that moves, every step. </div>
       )}
 
       {/* MAIN GAME LAYOUT */}

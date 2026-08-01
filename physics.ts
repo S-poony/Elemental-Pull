@@ -483,14 +483,16 @@ export const remapHeadings = (
 
 // --- ONE TICK ---
 // Move, cull what left the board, then fuse whatever ended up touching.
-// Returns the destroyed group sizes so the caller can score them, and the
-// snapshots so it can animate them.
+// Returns the number of pieces that moved so the caller can score them, and
+// the destroyed snapshots so it can animate the bursts.
 export interface TickResult {
   pieces: Piece[];
   headings: Headings;
   plan: MovePlan;
   moved: boolean;
-  destroyedGroupSizes: number[];
+  // Pieces that changed cell this tick, counted BEFORE the off-board cull —
+  // a group's final move off the edge is the payoff move and must score.
+  movedPieceCount: number;
   destroyed: Piece[];
   didBind: boolean;
 }
@@ -508,11 +510,15 @@ export const resolveTick = (piecesList: Piece[], headings: Headings): TickResult
       headings: {},
       plan,
       moved: false,
-      destroyedGroupSizes: [],
+      movedPieceCount: 0,
       destroyed: [],
       didBind: false,
     };
   }
+
+  const movedPieceCount = piecesList.filter(
+    (p) => plan.moveByGroup[p.groupId] !== undefined
+  ).length;
 
   let nextPieces = applyMoves(piecesList, plan.moveByGroup);
   const nextHeadings: Headings = { ...headings };
@@ -523,12 +529,8 @@ export const resolveTick = (piecesList: Piece[], headings: Headings): TickResult
   const escaped = new Set(
     nextPieces.filter((p) => !isOnBoard(p.r, p.c)).map((p) => p.groupId)
   );
-  const destroyedGroupSizes: number[] = [];
   let destroyed: Piece[] = [];
   if (escaped.size > 0) {
-    escaped.forEach((gId) => {
-      destroyedGroupSizes.push(nextPieces.filter((p) => p.groupId === gId).length);
-    });
     destroyed = nextPieces.filter((p) => escaped.has(p.groupId));
     nextPieces = nextPieces.filter((p) => !escaped.has(p.groupId));
   }
@@ -551,27 +553,26 @@ export const resolveTick = (piecesList: Piece[], headings: Headings): TickResult
     ),
     plan,
     moved: true,
-    destroyedGroupSizes,
+    movedPieceCount,
     destroyed,
     didBind: bindResult.didBind,
   };
 };
 
 // --- SCORING ---
-export const BASE_POINTS_PER_PIECE = 10;
-export const COMBO_MULTIPLIER_STEP = 0.25;
+// Motion is the score. Every piece that changes cell on a tick is worth
+// POINTS_PER_MOVED_PIECE, counted fresh each tick, so a long cascade pays
+// out over and over while a board that barely twitches pays almost nothing.
+//
+// Pieces leaving the board still explode — that's what keeps the edge clear
+// and the game playable — but the explosion itself is worth zero. An earlier
+// version scored destruction triangularly by group size; that rewarded
+// hoarding one huge group and ignored the chain reactions the physics is
+// actually about. Points now come from the reaction, not the disposal.
+export const POINTS_PER_MOVED_PIECE = 1;
 
-// Points scale triangularly with group size, so one bound group of N
-// pieces always beats N pieces trickling off one at a time. Destroying
-// several groups in a single turn earns a flatter bonus on top.
-export const computeDestructionScore = (groupSizes: number[]): number => {
-  if (groupSizes.length === 0) return 0;
-  const basePoints = groupSizes.reduce(
-    (sum, n) => sum + (BASE_POINTS_PER_PIECE * n * (n + 1)) / 2,
-    0
-  );
-  return Math.round(basePoints * (1 + COMBO_MULTIPLIER_STEP * (groupSizes.length - 1)));
-};
+export const computeMovementScore = (movedPieceCount: number): number =>
+  POINTS_PER_MOVED_PIECE * movedPieceCount;
 
 export const hasFreeOuterCell = (piecesList: Piece[]): boolean => {
   for (let r = 0; r < GRID_SIZE; r++) {
