@@ -209,6 +209,55 @@ console.log('\nregression: a cascade always comes to rest');
   check('they are touching', Math.abs(pieces[0].c - pieces[1].c) === 1 && pieces[0].r === pieces[1].r);
 }
 
+console.log('\nregression: a heading does not survive a tick it has no pull in');
+{
+  // The bug: resolveTick used to seed nextHeadings by spreading the whole
+  // previous headings object forward, then only overwriting entries for
+  // groups that moved. A group with nothing pulling it this tick (dir null,
+  // same as the "nothing attracting" regression above) kept its old heading
+  // untouched by that spread, and the {} reset only fires once the WHOLE
+  // board settles — so as long as anything else anywhere was still moving,
+  // an unrelated group's stale heading rode along indefinitely. Reconnect
+  // that group to a tie many ticks later and it would resume "coasting" on
+  // momentum from a tick where nothing was pulling it at all, which is
+  // exactly the drift the hasPull guard in resolveDirection exists to stop.
+  //
+  // An isolated G (no attractor in sight) is fed a heading as if it had
+  // been coasting. A separate G/R pair elsewhere has a real, unrelated pull
+  // so the tick's global `moved` is true and the old board-wide reset never
+  // fires. The isolated group must still drop its heading on this very
+  // tick, board-wide rest or not.
+  const isolatedId = 1;
+  const pieces: Piece[] = [
+    { id: isolatedId, color: 'G', r: 0, c: 0, groupId: isolatedId },
+    { id: 2, color: 'G', r: 2, c: 2, groupId: 2 },
+    { id: 3, color: 'R', r: 2, c: 4, groupId: 3 },
+  ];
+  const headings: Headings = { [isolatedId]: RIGHT };
+
+  eq('isolated group genuinely has no pull', computeGroupForces(pieces, headings)[isolatedId].dir, null);
+
+  const res = resolveTick(pieces, headings);
+  check('the board as a whole did move (elsewhere)', res.moved);
+  check(
+    'the isolated group\'s stale heading is gone, not carried forward',
+    res.headings[isolatedId] === undefined
+  );
+
+  // And the effect that actually matters: reconnect it to a genuine tie on
+  // a later tick and it must rest, not resume coasting on the old heading.
+  const retied: Piece[] = [
+    { id: isolatedId, color: 'G', r: 2, c: 2, groupId: isolatedId },
+    { id: 4, color: 'R', r: 2, c: 0, groupId: 4 },
+    { id: 5, color: 'R', r: 2, c: 4, groupId: 5 },
+  ];
+  eq(
+    'no leftover coasting once reconnected to a tie',
+    computeGroupForces(retied, res.headings)[isolatedId].dir,
+    null
+  );
+}
+
 console.log('\nscenario: diagonal tie ladder');
 {
   // Equal pull up and left. Nothing in the board picture can break this,

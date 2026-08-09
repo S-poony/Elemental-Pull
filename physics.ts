@@ -522,9 +522,20 @@ export const resolveTick = (piecesList: Piece[], headings: Headings): TickResult
   ).length;
 
   let nextPieces = applyMoves(piecesList, plan.moveByGroup);
-  const nextHeadings: Headings = { ...headings };
-  Object.keys(plan.moveByGroup).forEach((g) => {
-    nextHeadings[Number(g)] = plan.moveByGroup[Number(g)];
+  // Built fresh from this tick's forces, not by copying `headings` forward.
+  // A group keeps a heading only if it currently wants to move (real pull or
+  // a tie it was already coasting through) — covering both the group that
+  // actually moved and one that wanted to but got queued behind a stronger
+  // mover this tick, so it gets the same look again next tick. A group with
+  // no pull at all, or a tie with no heading to break it, drops out here and
+  // stays dropped, even while some other group elsewhere keeps the cascade
+  // running. Spreading `headings` forward unconditionally used to let a
+  // group's heading outlive a tick where nothing pulled it at all, as long
+  // as the board wasn't fully at rest — the same drift the hasPull guard in
+  // resolveDirection exists to prevent, just reintroduced one tick later.
+  const nextHeadings: Headings = {};
+  Object.values(plan.forces).forEach((f) => {
+    if (f.dir) nextHeadings[f.groupId] = f.dir;
   });
 
   const escaped = new Set(
