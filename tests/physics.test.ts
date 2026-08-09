@@ -260,8 +260,9 @@ console.log('\nregression: a heading does not survive a tick it has no pull in')
 
 console.log('\nscenario: diagonal tie ladder');
 {
-  // Equal pull up and left. Nothing in the board picture can break this,
-  // so the tiebreak ladder has to.
+  // Equal pull up and left, at equal distance. Heading can still break
+  // this (momentum is a real tiebreak); with no heading at all, nothing on
+  // the board picture distinguishes the two, so it rests.
   const b = board([
     '..R..',
     '.....',
@@ -276,7 +277,10 @@ console.log('\nscenario: diagonal tie ladder');
   // reversal, so it turns rather than flips.
   eq('refuses to reverse', computeGroupForces(b, { [g]: RIGHT })[g].dir, UP);
   eq('heading down turns left rather than reversing', computeGroupForces(b, { [g]: DOWN })[g].dir, LEFT);
-  check('always picks something', f.dir !== null);
+  // No heading and equal distance on both sides: nothing left to break the
+  // tie with, so it rests rather than pick an arbitrary compass direction
+  // the player had no way to see coming before placing.
+  eq('unheaded and equidistant — rests rather than guesses', f.dir, null);
 }
 
 console.log('\nunit: the tiebreak ladder');
@@ -293,12 +297,15 @@ console.log('\nunit: the tiebreak ladder');
   eq('pulls that cancel hand over to momentum', resolveDirection(0, 0, DOWN, near, true).dir, DOWN);
   eq('dominant axis wins outright', resolveDirection(-W2, -W4, undefined, near, true).dir, LEFT);
   eq('sharper pull breaks an unheaded tie', resolveDirection(-W2, -W2, undefined, near, true).dir, LEFT);
-  eq(
-    'fixed priority is the last resort',
-    resolveDirection(-W2, -W2, undefined, same, true).dir,
-    UP
-  );
-  check('the ladder never returns null while pulled', resolveDirection(-W2, -W2, undefined, {}, true).dir !== null);
+  // Equal force, equal distance, no heading: every real tiebreak is
+  // exhausted. This used to fall back to a fixed up/left/down/right
+  // priority — a direction the player had no way to predict, since the
+  // on-board arrow that mirrors this function only appears once the piece
+  // is already placed and committed. Resting is the legible outcome: it's
+  // the same "nothing here says which way" situation as a same-axis
+  // cancellation, just arrived at diagonally instead.
+  eq('symmetric on every axis — rests, not an arbitrary pick', resolveDirection(-W2, -W2, undefined, same, true).dir, null);
+  eq('same when there is no distance information at all', resolveDirection(-W2, -W2, undefined, {}, true).dir, null);
 }
 
 console.log('\ninvariant: touching always binds, so nothing is ever shoved');

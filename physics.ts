@@ -101,15 +101,6 @@ export const PULL_DIRS: Dir[] = [
   { dr: 0, dc: 1 },
 ];
 
-// Last-resort ordering for the vanishingly rare tie that survives both
-// momentum rules and the sharpest-pull rule. Up, left, down, right.
-const DIR_PRIORITY: Dir[] = [
-  { dr: -1, dc: 0 },
-  { dr: 0, dc: -1 },
-  { dr: 1, dc: 0 },
-  { dr: 0, dc: 1 },
-];
-
 export const sameDir = (a: Dir, b: Dir): boolean => a.dr === b.dr && a.dc === b.dc;
 const isReverse = (a: Dir, b: Dir): boolean => a.dr === -b.dr && a.dc === -b.dc;
 const dirKey = (d: Dir): string => `${d.dr},${d.dc}`;
@@ -207,8 +198,19 @@ export const findAttractorInDirection = (
 
 // --- DIRECTION FROM FORCE + MOMENTUM ---
 // The tiebreak ladder, in order. Only the first two rungs are player-facing
-// ("it keeps going"); the rest exist so that no configuration can ever
-// deadlock, and they fire almost never.
+// ("it keeps going"); the rest exist so a symmetric pull resolves to
+// something legible instead of an arbitrary compass direction the player
+// had no way to see coming.
+//
+// The ladder used to end in a fixed up/left/down/right priority once
+// distance ran out too: a genuinely symmetric tie still picked a direction,
+// just an unlabelled one. That's a real problem specifically because the
+// only place a player could see it coming — the on-board arrow — only
+// exists after the piece is already placed and can't be taken back. A tie
+// that survives every real tiebreak now rests instead, exactly like an
+// opposing pull that cancels to zero. It doesn't need its own case: it's
+// the same "nothing here says which way to go" situation, just arrived at
+// from a different axis.
 export const resolveDirection = (
   fx: number,
   fy: number,
@@ -261,8 +263,10 @@ export const resolveDirection = (
   const sharpest = candidates.filter((d) => (nearestByDir[dirKey(d)] ?? Infinity) === bestDist);
   if (sharpest.length === 1) return { dir: sharpest[0], coasting: false };
 
-  const byPriority = DIR_PRIORITY.find((pd) => sharpest.some((d) => sameDir(d, pd)));
-  return { dir: byPriority ?? candidates[0], coasting: false };
+  // Genuinely symmetric on every axis this function knows how to break a
+  // tie with — equal force, equal distance, no heading to carry. Rest,
+  // rather than pick a direction nothing on the board justifies.
+  return { dir: null, coasting: false };
 };
 
 // --- NET FORCE PER GROUP ---
