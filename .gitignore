@@ -5,3 +5,13 @@ dist/
 npm-debug.log*
 .test-build/
 .dirac-cache/
+
+# Compiler output from tsconfig.node.json (composite builds emit these next
+# to vite.config.ts). They were committed once, and because Vite resolves
+# vite.config.js BEFORE vite.config.ts, the stale compiled copy silently
+# became the real config — pinning base to a hardcoded /Reactor-Attractor/
+# while edits to the .ts did nothing.
+vite.config.js
+vite.config.d.ts
+*.tsbuildinfo
+.tsbuild/

@@ -36,9 +36,71 @@ interface DestroyedPiece {
 }
 
 interface ScoreFlash {
+  id: number;
   amount: number;
-  key: number;
 }
+
+// Where the high score lives, and where it USED to live. The game was
+// called Reactor Attractor until the rename, and a returning player's best
+// run is stored under the old key on their device — read through to it once
+// so nobody's score is silently reset by a name change.
+const HIGH_SCORE_KEY = 'elemental_pull_high_score';
+const LEGACY_HIGH_SCORE_KEY = 'attractors_high_score';
+// Whether the player has already dismissed the rules. On a phone the rules
+// block is a meaningful slice of the screen, and the board is sized from
+// whatever is left, so hiding it for returning players buys real board.
+const RULES_SEEN_KEY = 'elemental_pull_rules_seen';
+
+// Score is paid per tick, and ticks are 250ms apart while a "+N" takes
+// 750ms to fly, so up to three or four are always in the air during a long
+// cascade. The cap is a backstop against a pathological cascade piling up
+// elements, not something a normal turn reaches.
+const SCORE_FLASH_LIMIT = 6;
+// A tick worth this much or more gets the louder treatment — bigger, hotter
+// numerals and a pulse on the pill.
+const BIG_TICK_THRESHOLD = 4;
+
+// Horizontal scatter for the "+N"s, in px either side of the pill's centre.
+// Deliberately NOT a short cycle like `id % 3`: cascades routinely run past
+// three ticks, and a repeating left-centre-right pattern reads as a
+// marching sequence — the eye picks up the period and it looks mechanical.
+// Hashing the id gives an offset with no period a player can see, so a run
+// of payouts scatters instead of parading.
+// MurmurHash3's finalizer. A plain multiplicative hash is not enough here:
+// its low bits barely move between consecutive inputs, so `id * K % spread`
+// walks by a near-constant step and the numbers still parade across the
+// pill, just with a longer period. This avalanches, so id and id+1 give
+// unrelated results.
+const mix32 = (input: number): number => {
+  let x = input | 0;
+  x = Math.imul(x ^ (x >>> 16), 0x85ebca6b);
+  x = Math.imul(x ^ (x >>> 13), 0xc2b2ae35);
+  return (x ^ (x >>> 16)) >>> 0;
+};
+
+// A payout's flight path: where it starts, how far it climbs, how far it
+// leans. Pure in the id, so a re-render mid-flight can't teleport a number
+// that's already moving.
+const flashPath = (id: number) => {
+  // Independently salted draws — slicing one hash into three fields
+  // correlates them, which is how all three drifts ended up negative
+  // together in testing.
+  const a = mix32(id * 3 + 1);
+  const b = mix32(id * 3 + 2);
+  const c = mix32(id * 3 + 3);
+  // Consecutive payouts alternate sides. Randomness alone can still drop
+  // two in a row on top of each other, and during a cascade consecutive is
+  // exactly the pair that shares the screen; alternating guarantees they
+  // separate, while the hashed magnitude keeps the alternation from
+  // reading as a rhythm of its own.
+  const side = id % 2 === 0 ? 1 : -1;
+  return {
+    // High bits, not low: that's where a 32-bit mix has its entropy.
+    startX: side * (4 + (a >>> 27) % 8),
+    rise: -32 - ((b >>> 26) % 16),
+    drift: side * ((c >>> 27) % 8),
+  };
+};
 
 // --- GAME CONFIG & CONSTANTS ---
 // Warm-toned red/green/blue chosen to sit on the tan board without
@@ -176,12 +238,12 @@ export default function App() {
   const [nextColor, setNextColor] = useState<ColorKey>('R');
   const [score, setScore] = useState(0);
   const [highScore, setHighScore] = useState(() => {
-    return Number(localStorage.getItem('attractors_high_score')) || 0;
+    return Number(localStorage.getItem(HIGH_SCORE_KEY) ?? localStorage.getItem(LEGACY_HIGH_SCORE_KEY)) || 0;
   });
   const [isResolving, setIsResolving] = useState(false);
   const [gameOver, setGameOver] = useState(false);
   const [gameOverReason, setGameOverReason] = useState('');
-  const [showTutorial, setShowTutorial] = useState(true);
+  const [showTutorial, setShowTutorial] = useState(() => localStorage.getItem(RULES_SEEN_KEY) !== '1');
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [lastPlacedCell, setLastPlacedCell] = useState<{ r: number; c: number } | null>(null);
   // Transient "ghost" snapshots of pieces the instant they're destroyed —
@@ -189,9 +251,21 @@ export default function App() {
   // animation at the exact spot each piece vanished. Has no bearing on the
   // authoritative `pieces` state or any game logic.
   const [destroyingPieces, setDestroyingPieces] = useState<DestroyedPiece[]>([]);
-  // Brief "+N" pop shown in the HUD whenever score increases
-  const [scoreFlash, setScoreFlash] = useState<ScoreFlash | null>(null); // { amount, key }
-  const prevScoreRef = useRef(0);
+  // The "+N"s currently flying out of the score pill. A list, not a single
+  // value: each tick of a cascade pays out separately, and each payout gets
+  // its own element that lives out its own animation and then removes
+  // itself. The previous single-slot version was why the number never
+  // seemed to leave — a new tick just overwrote the amount on the element
+  // already on screen, so one numeral drifted around for the whole cascade
+  // instead of one leaving per tick.
+  const [scoreFlashes, setScoreFlashes] = useState<ScoreFlash[]>([]);
+  // Bumped on every gain to retrigger the counter's punch animation, and
+  // again separately for the pill's glow so a big tick reads differently
+  // from a small one. Keys, not booleans — restarting a CSS animation means
+  // remounting the element that carries it.
+  const [scorePopKey, setScorePopKey] = useState(0);
+  const [surgeKey, setSurgeKey] = useState(0);
+  const flashIdRef = useRef(0);
 
   // For generating unique IDs
   const pieceIdCounter = useRef(0);
@@ -219,21 +293,31 @@ export default function App() {
   useEffect(() => {
     if (score > highScore) {
       setHighScore(score);
-      localStorage.setItem('attractors_high_score', score.toString());
+      localStorage.setItem(HIGH_SCORE_KEY, score.toString());
     }
   }, [score, highScore]);
 
-  // Pop a brief "+N" indicator in the HUD whenever score increases
-  useEffect(() => {
-    const delta = score - prevScoreRef.current;
-    if (delta > 0) {
-      setScoreFlash({ amount: delta, key: Date.now() });
-      const timeout = setTimeout(() => setScoreFlash(null), 900);
-      prevScoreRef.current = score;
-      return () => clearTimeout(timeout);
-    }
-    prevScoreRef.current = score;
-  }, [score]);
+  // Launch one "+N" per payout. Called from the tick that actually scores
+  // rather than watched off the score value in an effect: the tick knows
+  // exactly what it paid, whereas diffing the total has to reconstruct it,
+  // and under StrictMode's double-invoked effects that reconstruction fires
+  // twice for one payout.
+  const emitScoreFlash = useCallback((amount: number) => {
+    const id = flashIdRef.current++;
+    // Newest wins if we ever hit the cap — an old number about to fade is
+    // the right thing to drop.
+    setScoreFlashes((prev) => [...prev, { id, amount }].slice(-SCORE_FLASH_LIMIT));
+    setScorePopKey((k) => k + 1);
+    if (amount >= BIG_TICK_THRESHOLD) setSurgeKey((k) => k + 1);
+  }, []);
+
+  // Each flash removes itself when its own animation ends, so there are no
+  // timers to leak or to fire against a restarted game. The cap above is
+  // the safety net for the one case animationend can't cover: a backgrounded
+  // tab, where animations are paused and the event never arrives.
+  const retireScoreFlash = useCallback((id: number) => {
+    setScoreFlashes((prev) => prev.filter((f) => f.id !== id));
+  }, []);
 
   // Audio Synth triggers for feedback
   const playSound = (type: string) => {
@@ -311,7 +395,18 @@ export default function App() {
     setIsResolving(false);
     setLastPlacedCell(null);
     setDestroyingPieces([]);
+    setScoreFlashes([]);
     rollNextColor();
+  };
+
+  // Dismissing the rules is remembered, so the board gets that space back
+  // on every later visit. Re-opening them un-remembers it.
+  const toggleTutorial = () => {
+    setShowTutorial((visible) => {
+      const next = !visible;
+      localStorage.setItem(RULES_SEEN_KEY, next ? '0' : '1');
+      return next;
+    });
   };
 
   // One tick of the cascade. All the decision-making lives in resolveTick;
@@ -345,7 +440,10 @@ export default function App() {
       // until the cascade settles, so the number climbing matches the tiles
       // moving on screen.
       const tickScore = computeMovementScore(result.movedPieceCount);
-      if (tickScore > 0) setScore((prev) => prev + tickScore);
+      if (tickScore > 0) {
+        setScore((prev) => prev + tickScore);
+        emitScoreFlash(tickScore);
+      }
 
       if (result.destroyed.length > 0) {
         // Ghost snapshots so a burst can play exactly where each piece
@@ -373,7 +471,7 @@ export default function App() {
         runResolutionStep(result.pieces, result.headings);
       }, 250);
     },
-    [soundEnabled]
+    [soundEnabled, emitScoreFlash]
   );
 
   // Click handler to place active piece on the board
@@ -477,30 +575,37 @@ export default function App() {
   }, [plan, pieces]);
 
   return (
+    // app-shell is exactly one visible viewport tall (dvh, not vh) and never
+    // scrolls — see styles.css for why vh is the wrong unit on a phone.
+    // Everything below it is sized to fit inside that, so the board can't
+    // slide under the URL bar.
     <div
-      className="min-h-screen flex flex-col select-none antialiased"
+      className="app-shell flex flex-col select-none antialiased"
       style={{ backgroundColor: THEME.page, color: THEME.ink }}
     >
 
-      {/* HEADER — full game name plus three icon buttons */}
-      <header className="px-4 py-5 flex items-center justify-between max-w-lg w-full mx-auto">
-        <h1 className="text-3xl font-bold tracking-tight" style={{ color: THEME.ink }}>
-          Reactor Attractor
+      {/* HEADER — game name plus three icon buttons. Fixed height: it and
+          the HUD are the fixed part of the column, the board takes the
+          rest. */}
+      <header className="game-header shrink-0 px-4 py-3 sm:py-5 flex items-center justify-between gap-3 max-w-lg w-full mx-auto">
+        <h1 className="text-2xl sm:text-3xl font-bold tracking-tight truncate" style={{ color: THEME.ink }}>
+          Elemental Pull
         </h1>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           {([
             { key: 'sound', onClick: () => setSoundEnabled(!soundEnabled), title: soundEnabled ? 'Mute' : 'Unmute', icon: soundEnabled ? <Volume2 size={18} /> : <VolumeX size={18} /> },
-            { key: 'help', onClick: () => setShowTutorial(!showTutorial), title: 'How to play', icon: <HelpCircle size={18} /> },
+            { key: 'help', onClick: toggleTutorial, title: 'How to play', icon: <HelpCircle size={18} /> },
             { key: 'restart', onClick: restartGame, title: 'New game', icon: <RotateCcw size={18} /> },
           ]).map((b) => (
             <button
               key={b.key}
               onClick={b.onClick}
               title={b.title}
-              className="p-2 rounded-md text-white transition-colors"
-              style={{ backgroundColor: THEME.button }}
-              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = THEME.buttonHover)}
-              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = THEME.button)}
+              aria-label={b.title}
+              // btn-warm carries the hover colour behind a (hover: hover)
+              // query. Doing it with onMouseEnter/onMouseLeave left the
+              // button stuck in its hover shade after a tap on touch.
+              className="btn-warm p-2 rounded-md text-white"
             >
               {b.icon}
             </button>
@@ -508,37 +613,75 @@ export default function App() {
         </div>
       </header>
 
-      {/* HOW TO PLAY — short, plain-language, collapsible */}
+      {/* HOW TO PLAY — short, plain-language, collapsible, and hidden by
+          default once dismissed. shrink-0 so it never gets squeezed into
+          unreadability; it takes its space and the board adapts. */}
       {showTutorial && (
-        <div className="max-w-lg w-full mx-auto px-4 pb-3 text-sm leading-relaxed" style={{ color: THEME.inkSoft }}>
+        <div className="compact-hide shrink-0 max-w-lg w-full mx-auto px-4 pb-3 text-sm leading-relaxed" style={{ color: THEME.inkSoft }}>
           Red pulls green, green pulls blue, blue pulls red. <br />
           Drop anywhere that isn't touching a tile. <br />
           Tiles connect on contact. <br />
           Score 1 point for every tile that moves, every step. </div>
       )}
 
-      {/* MAIN GAME LAYOUT */}
-      <main className="flex-1 w-full mx-auto px-4 py-2 flex flex-col items-center justify-center">
+      {/* MAIN GAME LAYOUT — min-h-0 is what lets this actually shrink
+          inside the fixed-height shell instead of overflowing it, which is
+          a flex child's default. */}
+      <main className="flex-1 min-h-0 w-full mx-auto px-4 pb-3 flex flex-col items-center">
 
         {/* INTERACTIVE PLAYING BOARD */}
-        <div className="relative flex flex-col items-center w-full max-w-lg">
+        <div className="relative flex flex-col items-center w-full max-w-lg flex-1 min-h-0">
 
           {/* COMPACT HUD BAR — score, best, and next tile, as 2048's
               stacked label-over-value pills. */}
-          <div className="w-full flex items-end justify-between gap-3 mb-3">
+          <div className="w-full shrink-0 flex items-end justify-between gap-3 mb-3">
             <div className="flex items-end gap-2">
               <div className="relative rounded-md px-4 py-1.5 text-center min-w-[5.5rem]" style={{ backgroundColor: THEME.board }}>
-                <div className="text-[10px] uppercase tracking-widest font-bold" style={{ color: '#EEE4DA' }}>Score</div>
-                <div className="text-xl font-bold text-white tabular-nums leading-tight">{score}</div>
-                {scoreFlash && (
-                  <span
-                    key={scoreFlash.key}
-                    className="absolute -top-3 left-1/2 -translate-x-1/2 text-sm font-bold animate-bounce pointer-events-none"
-                    style={{ color: THEME.ink }}
-                  >
-                    +{scoreFlash.amount}
-                  </span>
+                {/* Pill glow for a big tick. Its own element, keyed
+                    separately, so retriggering it doesn't remount the pill
+                    and cut short the "+N"s flying out of it. */}
+                {surgeKey > 0 && (
+                  <div
+                    key={`surge-${surgeKey}`}
+                    className="absolute inset-0 rounded-md score-pill-surge pointer-events-none"
+                  />
                 )}
+                <div className="text-[10px] uppercase tracking-widest font-bold" style={{ color: '#EEE4DA' }}>Score</div>
+                {/* Keyed on the payout counter: changing the key remounts
+                    the element, which is the only reliable way to restart a
+                    CSS animation from the top. tabular-nums keeps the digits
+                    from jittering as the total grows. */}
+                <div
+                  key={`score-${scorePopKey}`}
+                  className="text-xl font-bold text-white tabular-nums leading-tight score-pop"
+                >
+                  {score}
+                </div>
+
+                {/* "+N" LAYER — one element per payout, each fading out on
+                    its own clock, scattered horizontally so the several
+                    that are airborne at once during a cascade read as a
+                    burst instead of stacking into one smear. */}
+                {scoreFlashes.map((flash) => {
+                  const big = flash.amount >= BIG_TICK_THRESHOLD;
+                  const path = flashPath(flash.id);
+                  return (
+                    <span
+                      key={flash.id}
+                      onAnimationEnd={() => retireScoreFlash(flash.id)}
+                      className={`score-flash absolute -top-1 font-bold pointer-events-none ${big ? 'text-lg' : 'text-sm'}`}
+                      style={{
+                        left: `calc(50% + ${path.startX}px)`,
+                        color: big ? COLORS.R.hex : THEME.ink,
+                        // Read by the keyframes; see styles.css.
+                        '--rise': `${path.rise}px`,
+                        '--drift': `${path.drift}px`,
+                      } as CSSProperties}
+                    >
+                      +{flash.amount}
+                    </span>
+                  );
+                })}
               </div>
               <div className="rounded-md px-4 py-1.5 text-center min-w-[5.5rem]" style={{ backgroundColor: THEME.board }}>
                 <div className="text-[10px] uppercase tracking-widest font-bold flex items-center justify-center gap-1" style={{ color: '#EEE4DA' }}>
@@ -560,300 +703,310 @@ export default function App() {
             </div>
           </div>
 
-          {/* STAGE — same size as the board now that pieces vanish the
-              instant they leave the grid; no drift margin needed. */}
-          <div className="relative w-full max-w-lg aspect-square">
+          {/* BOARD AREA — a sizing container. The stage inside it is a
+              square of 100cqmin, i.e. the smaller of this box's width and
+              height, which is exactly "as big as fits without overflowing"
+              in one value. Doing it with aspect-square + max-height instead
+              doesn't work: with a definite width, a max-height clamp
+              squashes the box out of square rather than shrinking both
+              sides. See styles.css for the no-container-queries fallback. */}
+          <div className="board-fit w-full flex-1 min-h-0 flex items-center justify-center">
 
-            {/* Bordered board box — inset within the stage, still clips its
-                own background/cells so the grid itself reads cleanly. */}
-            <div
-              className="absolute rounded-lg overflow-hidden"
-              style={{
-                left: `${GRID_BOX_OFFSET_PCT}%`,
-                top: `${GRID_BOX_OFFSET_PCT}%`,
-                width: `${GRID_BOX_SIZE_PCT}%`,
-                height: `${GRID_BOX_SIZE_PCT}%`,
-                padding: `${BOARD_PAD_STAGE_PCT}%`,
-                backgroundColor: THEME.board,
-              }}
-            >
-              {/* GRID LAYOUT — GRID_SIZE x GRID_SIZE */}
+            {/* STAGE — same size as the board now that pieces vanish the
+                instant they leave the grid; no drift margin needed. */}
+            <div className="board-stage relative">
+
+              {/* Bordered board box — inset within the stage, still clips its
+                  own background/cells so the grid itself reads cleanly. */}
               <div
-                // Template comes from GRID_SIZE rather than Tailwind's
-                // grid-cols-N, which would have to be edited in lockstep
-                // with the constant and silently mis-render if it wasn't.
-                className="w-full h-full grid relative"
+                className="absolute rounded-lg overflow-hidden"
                 style={{
-                  gap: `${CELL_GAP_GRID_PCT}%`,
-                  gridTemplateColumns: `repeat(${GRID_SIZE}, minmax(0, 1fr))`,
-                  gridTemplateRows: `repeat(${GRID_SIZE}, minmax(0, 1fr))`,
+                  left: `${GRID_BOX_OFFSET_PCT}%`,
+                  top: `${GRID_BOX_OFFSET_PCT}%`,
+                  width: `${GRID_BOX_SIZE_PCT}%`,
+                  height: `${GRID_BOX_SIZE_PCT}%`,
+                  padding: `${BOARD_PAD_STAGE_PCT}%`,
+                  backgroundColor: THEME.board,
                 }}
               >
-                {Array.from({ length: GRID_SIZE }).map((_, r) =>
-                  Array.from({ length: GRID_SIZE }).map((_, c) => {
-                    // Playability is asked of the same function the click
-                    // handler uses, so a ghosted cell is always a cell that
-                    // will actually accept the tile.
-                    const isPlayable = isLegalPlacement(r, c, pieces);
-                    const isLastPlaced = lastPlacedCell && lastPlacedCell.r === r && lastPlacedCell.c === c;
+                {/* GRID LAYOUT — GRID_SIZE x GRID_SIZE */}
+                <div
+                  // Template comes from GRID_SIZE rather than Tailwind's
+                  // grid-cols-N, which would have to be edited in lockstep
+                  // with the constant and silently mis-render if it wasn't.
+                  className="w-full h-full grid relative"
+                  style={{
+                    gap: `${CELL_GAP_GRID_PCT}%`,
+                    gridTemplateColumns: `repeat(${GRID_SIZE}, minmax(0, 1fr))`,
+                    gridTemplateRows: `repeat(${GRID_SIZE}, minmax(0, 1fr))`,
+                  }}
+                >
+                  {Array.from({ length: GRID_SIZE }).map((_, r) =>
+                    Array.from({ length: GRID_SIZE }).map((_, c) => {
+                      // Playability is asked of the same function the click
+                      // handler uses, so a ghosted cell is always a cell that
+                      // will actually accept the tile.
+                      const isPlayable = isLegalPlacement(r, c, pieces);
+                      const isLastPlaced = lastPlacedCell && lastPlacedCell.r === r && lastPlacedCell.c === c;
 
-                    return (
-                      <div
-                        key={`${r}-${c}`}
-                        onClick={() => handleCellClick(r, c)}
-                        className={`relative rounded-md flex items-center justify-center select-none ${isPlayable ? 'cursor-pointer' : 'cursor-default'}`}
-                        style={{ backgroundColor: THEME.cell }}
-                      >
-                        {/* Persistent ghost of the next tile on every legal
-                            cell — this, rather than a dashed outline, is
-                            what marks a cell as playable, and it works on
-                            touch devices where :hover never fires. */}
-                        {isPlayable && !isResolving && !gameOver && (
-                          <div
-                            className="absolute inset-1 rounded-md opacity-25 hover:opacity-60 active:opacity-75 transition-opacity"
-                            style={{ backgroundColor: COLORS[nextColor]?.hex }}
-                          />
-                        )}
+                      return (
+                        <div
+                          key={`${r}-${c}`}
+                          onClick={() => handleCellClick(r, c)}
+                          className={`relative rounded-md flex items-center justify-center select-none ${isPlayable ? 'cursor-pointer' : 'cursor-default'}`}
+                          style={{ backgroundColor: THEME.cell }}
+                        >
+                          {/* Persistent ghost of the next tile on every legal
+                              cell — this, rather than a dashed outline, is
+                              what marks a cell as playable, and it works on
+                              touch devices where :hover never fires. */}
+                          {isPlayable && !isResolving && !gameOver && (
+                            <div
+                              className="absolute inset-1 rounded-md opacity-25 hover:opacity-60 active:opacity-75 transition-opacity"
+                              style={{ backgroundColor: COLORS[nextColor]?.hex }}
+                            />
+                          )}
 
-                        {/* Cell highlight for the last placed tile */}
-                        {isLastPlaced && (
-                          <div
-                            className="absolute inset-0 rounded-md animate-pulse pointer-events-none"
-                            style={{ boxShadow: `inset 0 0 0 2px ${THEME.button}` }}
-                          />
-                        )}
-                      </div>
-                    );
-                  })
+                          {/* Cell highlight for the last placed tile */}
+                          {isLastPlaced && (
+                            <div
+                              className="absolute inset-0 rounded-md animate-pulse pointer-events-none"
+                              style={{ boxShadow: `inset 0 0 0 2px ${THEME.button}` }}
+                            />
+                          )}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+
+                {/* LOSS / GAME OVER MODAL SCREEN */}
+                {gameOver && (
+                  <div
+                    className="absolute inset-0 flex flex-col items-center justify-center p-6 z-30 text-center"
+                    style={{ backgroundColor: 'rgba(238, 228, 218, 0.73)' }}
+                  >
+                    <h3 className="text-4xl font-bold tracking-tight mb-4" style={{ color: THEME.ink }}>
+                      Game over
+                    </h3>
+
+                    <div className="mb-6">
+                      <p className="text-5xl font-bold tabular-nums" style={{ color: THEME.ink }}>{score}</p>
+                      {score >= highScore && score > 0 && (
+                        <span
+                          className="text-[10px] uppercase tracking-widest px-2 py-0.5 rounded font-bold mt-2 inline-block animate-bounce text-white"
+                          style={{ backgroundColor: THEME.button }}
+                        >
+                          New best
+                        </span>
+                      )}
+                    </div>
+
+                    <button
+                      onClick={restartGame}
+                      className="w-full max-w-xs py-3 text-white font-bold rounded-md transition-colors flex items-center justify-center space-x-2"
+                      style={{ backgroundColor: THEME.button }}
+                      onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = THEME.buttonHover)}
+                      onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = THEME.button)}
+                    >
+                      <RotateCcw size={16} />
+                      <span>New game</span>
+                    </button>
+                  </div>
                 )}
               </div>
 
-              {/* LOSS / GAME OVER MODAL SCREEN */}
-              {gameOver && (
-                <div
-                  className="absolute inset-0 flex flex-col items-center justify-center p-6 z-30 text-center"
-                  style={{ backgroundColor: 'rgba(238, 228, 218, 0.73)' }}
-                >
-                  <h3 className="text-4xl font-bold tracking-tight mb-4" style={{ color: THEME.ink }}>
-                    Game over
-                  </h3>
+              {/* UNCLIPPED PIECE LAYER — spans the full stage (not just the
+                  bordered box) so off-grid pieces render at their real,
+                  compressed position instead of vanishing at the border. */}
+              <div className="absolute inset-0 pointer-events-none z-10">
+                {(() => {
+                  // Precompute everything once per piece so the links pass
+                  // and the pieces pass below can't drift out of sync with
+                  // each other.
+                  const renderInfo = pieces.map((p) => {
+                    const colorConfig = COLORS[p.color];
 
-                  <div className="mb-6">
-                    <p className="text-5xl font-bold tabular-nums" style={{ color: THEME.ink }}>{score}</p>
-                    {score >= highScore && score > 0 && (
-                      <span
-                        className="text-[10px] uppercase tracking-widest px-2 py-0.5 rounded font-bold mt-2 inline-block animate-bounce text-white"
-                        style={{ backgroundColor: THEME.button }}
-                      >
-                        New best
-                      </span>
-                    )}
-                  </div>
+                    const hasUp = hasNeighborInGroup(p, 'up');
+                    const hasDown = hasNeighborInGroup(p, 'down');
+                    const hasLeft = hasNeighborInGroup(p, 'left');
+                    const hasRight = hasNeighborInGroup(p, 'right');
 
-                  <button
-                    onClick={restartGame}
-                    className="w-full max-w-xs py-3 text-white font-bold rounded-md transition-colors flex items-center justify-center space-x-2"
-                    style={{ backgroundColor: THEME.button }}
-                    onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = THEME.buttonHover)}
-                    onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = THEME.button)}
-                  >
-                    <RotateCcw size={16} />
-                    <span>New game</span>
-                  </button>
-                </div>
-              )}
-            </div>
+                    const dist = trueDistPastEdge(p.r, p.c);
+                    const { scale, opacity, warning } = getPieceVisualStyle(dist);
+                    const leftPercent = coordToStageCellUnits(p.c) * CELL_STAGE_PCT;
+                    const topPercent = coordToStageCellUnits(p.r) * CELL_STAGE_PCT;
+                    const isOnGrid = p.r >= 0 && p.r <= GRID_SIZE - 1 && p.c >= 0 && p.c <= GRID_SIZE - 1;
+                    const boxStageUnits = isOnGrid ? ON_GRID_CELL_STAGE_UNITS : 1;
+                    const boxPercent = boxStageUnits * CELL_STAGE_PCT;
 
-            {/* UNCLIPPED PIECE LAYER — spans the full stage (not just the
-                bordered box) so off-grid pieces render at their real,
-                compressed position instead of vanishing at the border. */}
-            <div className="absolute inset-0 pointer-events-none z-10">
-              {(() => {
-                // Precompute everything once per piece so the links pass
-                // and the pieces pass below can't drift out of sync with
-                // each other.
-                const renderInfo = pieces.map((p) => {
-                  const colorConfig = COLORS[p.color];
+                    const isAttractor = attractingPieceIds.has(p.id);
+                    const arrow = arrowByPieceId[p.id];
+                    const hasDirectionalPull = !!arrow;
 
-                  const hasUp = hasNeighborInGroup(p, 'up');
-                  const hasDown = hasNeighborInGroup(p, 'down');
-                  const hasLeft = hasNeighborInGroup(p, 'left');
-                  const hasRight = hasNeighborInGroup(p, 'right');
+                    const arrowStyle: CSSProperties | null = arrow
+                      ? arrow.dir.dr === -1
+                        ? { top: '-7px', left: '50%', transform: 'translateX(-50%) rotate(0deg)' }
+                        : arrow.dir.dr === 1
+                          ? { bottom: '-7px', left: '50%', transform: 'translateX(-50%) rotate(180deg)' }
+                          : arrow.dir.dc === -1
+                            ? { left: '-7px', top: '50%', transform: 'translateY(-50%) rotate(-90deg)' }
+                            : { right: '-7px', top: '50%', transform: 'translateY(-50%) rotate(90deg)' }
+                      : null;
 
-                  const dist = trueDistPastEdge(p.r, p.c);
-                  const { scale, opacity, warning } = getPieceVisualStyle(dist);
-                  const leftPercent = coordToStageCellUnits(p.c) * CELL_STAGE_PCT;
-                  const topPercent = coordToStageCellUnits(p.r) * CELL_STAGE_PCT;
-                  const isOnGrid = p.r >= 0 && p.r <= GRID_SIZE - 1 && p.c >= 0 && p.c <= GRID_SIZE - 1;
-                  const boxStageUnits = isOnGrid ? ON_GRID_CELL_STAGE_UNITS : 1;
-                  const boxPercent = boxStageUnits * CELL_STAGE_PCT;
+                    return {
+                      p, colorConfig, hasUp, hasDown, hasLeft, hasRight, dist, scale, opacity, warning,
+                      leftPercent, topPercent, boxPercent, isAttractor, arrow, hasDirectionalPull, arrowStyle
+                    };
+                  });
 
-                  const isAttractor = attractingPieceIds.has(p.id);
-                  const arrow = arrowByPieceId[p.id];
-                  const hasDirectionalPull = !!arrow;
-
-                  const arrowStyle: CSSProperties | null = arrow
-                    ? arrow.dir.dr === -1
-                      ? { top: '-7px', left: '50%', transform: 'translateX(-50%) rotate(0deg)' }
-                      : arrow.dir.dr === 1
-                        ? { bottom: '-7px', left: '50%', transform: 'translateX(-50%) rotate(180deg)' }
-                        : arrow.dir.dc === -1
-                          ? { left: '-7px', top: '50%', transform: 'translateY(-50%) rotate(-90deg)' }
-                          : { right: '-7px', top: '50%', transform: 'translateY(-50%) rotate(90deg)' }
-                    : null;
-
-                  return {
-                    p, colorConfig, hasUp, hasDown, hasLeft, hasRight, dist, scale, opacity, warning,
-                    leftPercent, topPercent, boxPercent, isAttractor, arrow, hasDirectionalPull, arrowStyle
-                  };
-                });
-
-                return (
-                  <>
-                    {/* LINKS LAYER — always painted beneath every piece, no
-                        matter how far anything has drifted off-grid. Group
-                        connectors are background scaffolding; they
-                        shouldn't compete with pieces for visibility. */}
-                    <div className="absolute inset-0" style={{ zIndex: 0 }}>
-                      {renderInfo.map(({ p, hasUp, hasDown, hasLeft, hasRight, leftPercent, topPercent, boxPercent, scale, opacity }) => (
-                        <div
-                          key={`link-${p.id}`}
-                          className="absolute transition-all duration-300 ease-out"
-                          style={{ left: `${leftPercent}%`, top: `${topPercent}%`, width: `${boxPercent}%`, height: `${boxPercent}%`, opacity }}
-                        >
-                          <div className="relative w-full h-full flex items-center justify-center" style={{ transform: `scale(${scale})`, transformOrigin: 'center' }}>
-                            {hasUp && (
-                              <div className="absolute w-3 rounded-sm" style={{ backgroundColor: THEME.button, top: `-${BRIDGE_OVERSHOOT_PCT}%`, height: `calc(50% + ${BRIDGE_OVERSHOOT_PCT}%)` }} />
-                            )}
-                            {hasDown && (
-                              <div className="absolute w-3 rounded-sm" style={{ backgroundColor: THEME.button, bottom: `-${BRIDGE_OVERSHOOT_PCT}%`, height: `calc(50% + ${BRIDGE_OVERSHOOT_PCT}%)` }} />
-                            )}
-                            {hasLeft && (
-                              <div className="absolute h-3 rounded-sm" style={{ backgroundColor: THEME.button, left: `-${BRIDGE_OVERSHOOT_PCT}%`, width: `calc(50% + ${BRIDGE_OVERSHOOT_PCT}%)` }} />
-                            )}
-                            {hasRight && (
-                              <div className="absolute h-3 rounded-sm" style={{ backgroundColor: THEME.button, right: `-${BRIDGE_OVERSHOOT_PCT}%`, width: `calc(50% + ${BRIDGE_OVERSHOOT_PCT}%)` }} />
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-
-                    {/* PIECES LAYER — every piece has its own explicit
-                        z-index, PIECE_Z_BASE minus how far past the edge it
-                        is, so pieces closer to the grid always render above
-                        ones that have drifted further out (instead of
-                        whichever happened to be later in the pieces array),
-                        while still staying safely above the links layer's
-                        z-index: 0 even at the furthest drift distance. */}
-                    <div className="absolute inset-0">
-                      {renderInfo.map(({ p, colorConfig, dist, scale, opacity, warning, leftPercent, topPercent, boxPercent, isAttractor, arrow, hasDirectionalPull, arrowStyle }) => (
-                        <div
-                          key={p.id}
-                          className="absolute transition-all duration-300 ease-out flex items-center justify-center"
-                          style={{
-                            left: `${leftPercent}%`,
-                            top: `${topPercent}%`,
-                            width: `${boxPercent}%`,
-                            height: `${boxPercent}%`,
-                            opacity,
-                            zIndex: PIECE_Z_BASE - dist,
-                          }}
-                        >
-                          <div className="relative w-full h-full flex items-center justify-center" style={{ transform: `scale(${scale})`, transformOrigin: 'center' }}>
-                            <div className="relative w-full h-full flex items-center justify-center" style={{ padding: '4px' }}>
-                              {/* Attractor halo — pulses in the piece's own
-                                  color whenever it's currently the chosen
-                                  attractor for some group, even off-grid or
-                                  mid tie-lock. */}
-                              {isAttractor && (
-                                <div
-                                  className="absolute inset-0 rounded-md animate-ping opacity-40"
-                                  style={{ backgroundColor: colorConfig.hex, animationDuration: '1.8s' }}
-                                />
-                              )}
-
-                              {/* Off-grid warning ring — pulses as a piece
-                                  nears the cull threshold, so drift reads as
-                                  "danger" and not just "small." */}
-                              {warning && (
-                                <div className="absolute -inset-1 rounded-md border-2 border-red-500/70 animate-pulse" />
-                              )}
-
-                              {/* The tile itself — rounded square with a
-                                  darker bottom edge, 2048-style. */}
-                              <div
-                                className="w-full h-full rounded-md select-none relative"
-                                style={{
-                                  backgroundColor: colorConfig.hex,
-                                  boxShadow: `inset 0 -4px 0 ${colorConfig.dark}`,
-                                }}
-                              />
-
-                              {/* Pull direction indicator — sits on the
-                                  leading edge of the group, facing where it
-                                  slides this tick. Filled when a net pull is
-                                  driving it; hollow when the pulls cancelled
-                                  and the group is coasting on momentum,
-                                  which is the one case where the board alone
-                                  doesn't explain the move. */}
-                              {hasDirectionalPull && arrow && (
-                                <div
-                                  className="absolute w-4 h-4 rounded-full flex items-center justify-center"
-                                  style={{
-                                    ...(arrowStyle ?? {}),
-                                    backgroundColor: arrow.coasting ? THEME.page : THEME.ink,
-                                    border: arrow.coasting ? `2px solid ${THEME.ink}` : 'none',
-                                    opacity: arrow.coasting ? 1 : arrow.strength,
-                                  }}
-                                >
-                                  <ChevronUp size={10} color={arrow.coasting ? THEME.ink : '#FAF8EF'} />
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-
-                    {/* DESTRUCTION BURST LAYER — transient "ghost" pieces
-                        rendered at the exact spot (on-grid or drifted
-                        off-grid) where a piece vanished, purely a visual
-                        echo layered on top of the authoritative board
-                        state; see destroyingPieces state. */}
-                    <div className="absolute inset-0 pointer-events-none z-20">
-                      {destroyingPieces.map((d) => {
-                        const colorConfig = COLORS[d.color];
-                        const leftPercent = coordToStageCellUnits(d.c) * CELL_STAGE_PCT;
-                        const topPercent = coordToStageCellUnits(d.r) * CELL_STAGE_PCT;
-                        const isOnGrid = d.r >= 0 && d.r <= GRID_SIZE - 1 && d.c >= 0 && d.c <= GRID_SIZE - 1;
-                        const boxPercent = (isOnGrid ? ON_GRID_CELL_STAGE_UNITS : 1) * CELL_STAGE_PCT;
-                        return (
+                  return (
+                    <>
+                      {/* LINKS LAYER — always painted beneath every piece, no
+                          matter how far anything has drifted off-grid. Group
+                          connectors are background scaffolding; they
+                          shouldn't compete with pieces for visibility. */}
+                      <div className="absolute inset-0" style={{ zIndex: 0 }}>
+                        {renderInfo.map(({ p, hasUp, hasDown, hasLeft, hasRight, leftPercent, topPercent, boxPercent, scale, opacity }) => (
                           <div
-                            key={`destroy-${d.id}`}
-                            className="absolute flex items-center justify-center"
-                            style={{ left: `${leftPercent}%`, top: `${topPercent}%`, width: `${boxPercent}%`, height: `${boxPercent}%` }}
+                            key={`link-${p.id}`}
+                            className="absolute transition-all duration-300 ease-out"
+                            style={{ left: `${leftPercent}%`, top: `${topPercent}%`, width: `${boxPercent}%`, height: `${boxPercent}%`, opacity }}
                           >
-                            <div className="relative w-full h-full flex items-center justify-center" style={{ padding: '4px' }}>
-                              <div
-                                className="absolute inset-0 rounded-md border-2 animate-piece-destroy-ring"
-                                style={{ borderColor: colorConfig?.hex }}
-                              />
-                              <div
-                                className="w-full h-full rounded-md animate-piece-destroy"
-                                style={{
-                                  backgroundColor: colorConfig?.hex,
-                                  boxShadow: `inset 0 -4px 0 ${colorConfig?.dark}`,
-                                }}
-                              />
+                            <div className="relative w-full h-full flex items-center justify-center" style={{ transform: `scale(${scale})`, transformOrigin: 'center' }}>
+                              {hasUp && (
+                                <div className="absolute w-3 rounded-sm" style={{ backgroundColor: THEME.button, top: `-${BRIDGE_OVERSHOOT_PCT}%`, height: `calc(50% + ${BRIDGE_OVERSHOOT_PCT}%)` }} />
+                              )}
+                              {hasDown && (
+                                <div className="absolute w-3 rounded-sm" style={{ backgroundColor: THEME.button, bottom: `-${BRIDGE_OVERSHOOT_PCT}%`, height: `calc(50% + ${BRIDGE_OVERSHOOT_PCT}%)` }} />
+                              )}
+                              {hasLeft && (
+                                <div className="absolute h-3 rounded-sm" style={{ backgroundColor: THEME.button, left: `-${BRIDGE_OVERSHOOT_PCT}%`, width: `calc(50% + ${BRIDGE_OVERSHOOT_PCT}%)` }} />
+                              )}
+                              {hasRight && (
+                                <div className="absolute h-3 rounded-sm" style={{ backgroundColor: THEME.button, right: `-${BRIDGE_OVERSHOOT_PCT}%`, width: `calc(50% + ${BRIDGE_OVERSHOOT_PCT}%)` }} />
+                              )}
                             </div>
                           </div>
-                        );
-                      })}
-                    </div>
-                  </>
-                );
-              })()}
+                        ))}
+                      </div>
+
+                      {/* PIECES LAYER — every piece has its own explicit
+                          z-index, PIECE_Z_BASE minus how far past the edge it
+                          is, so pieces closer to the grid always render above
+                          ones that have drifted further out (instead of
+                          whichever happened to be later in the pieces array),
+                          while still staying safely above the links layer's
+                          z-index: 0 even at the furthest drift distance. */}
+                      <div className="absolute inset-0">
+                        {renderInfo.map(({ p, colorConfig, dist, scale, opacity, warning, leftPercent, topPercent, boxPercent, isAttractor, arrow, hasDirectionalPull, arrowStyle }) => (
+                          <div
+                            key={p.id}
+                            className="absolute transition-all duration-300 ease-out flex items-center justify-center"
+                            style={{
+                              left: `${leftPercent}%`,
+                              top: `${topPercent}%`,
+                              width: `${boxPercent}%`,
+                              height: `${boxPercent}%`,
+                              opacity,
+                              zIndex: PIECE_Z_BASE - dist,
+                            }}
+                          >
+                            <div className="relative w-full h-full flex items-center justify-center" style={{ transform: `scale(${scale})`, transformOrigin: 'center' }}>
+                              <div className="relative w-full h-full flex items-center justify-center" style={{ padding: '4px' }}>
+                                {/* Attractor halo — pulses in the piece's own
+                                    color whenever it's currently the chosen
+                                    attractor for some group, even off-grid or
+                                    mid tie-lock. */}
+                                {isAttractor && (
+                                  <div
+                                    className="absolute inset-0 rounded-md animate-ping opacity-40"
+                                    style={{ backgroundColor: colorConfig.hex, animationDuration: '1.8s' }}
+                                  />
+                                )}
+
+                                {/* Off-grid warning ring — pulses as a piece
+                                    nears the cull threshold, so drift reads as
+                                    "danger" and not just "small." */}
+                                {warning && (
+                                  <div className="absolute -inset-1 rounded-md border-2 border-red-500/70 animate-pulse" />
+                                )}
+
+                                {/* The tile itself — rounded square with a
+                                    darker bottom edge, 2048-style. */}
+                                <div
+                                  className="w-full h-full rounded-md select-none relative"
+                                  style={{
+                                    backgroundColor: colorConfig.hex,
+                                    boxShadow: `inset 0 -4px 0 ${colorConfig.dark}`,
+                                  }}
+                                />
+
+                                {/* Pull direction indicator — sits on the
+                                    leading edge of the group, facing where it
+                                    slides this tick. Filled when a net pull is
+                                    driving it; hollow when the pulls cancelled
+                                    and the group is coasting on momentum,
+                                    which is the one case where the board alone
+                                    doesn't explain the move. */}
+                                {hasDirectionalPull && arrow && (
+                                  <div
+                                    className="absolute w-4 h-4 rounded-full flex items-center justify-center"
+                                    style={{
+                                      ...(arrowStyle ?? {}),
+                                      backgroundColor: arrow.coasting ? THEME.page : THEME.ink,
+                                      border: arrow.coasting ? `2px solid ${THEME.ink}` : 'none',
+                                      opacity: arrow.coasting ? 1 : arrow.strength,
+                                    }}
+                                  >
+                                    <ChevronUp size={10} color={arrow.coasting ? THEME.ink : '#FAF8EF'} />
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* DESTRUCTION BURST LAYER — transient "ghost" pieces
+                          rendered at the exact spot (on-grid or drifted
+                          off-grid) where a piece vanished, purely a visual
+                          echo layered on top of the authoritative board
+                          state; see destroyingPieces state. */}
+                      <div className="absolute inset-0 pointer-events-none z-20">
+                        {destroyingPieces.map((d) => {
+                          const colorConfig = COLORS[d.color];
+                          const leftPercent = coordToStageCellUnits(d.c) * CELL_STAGE_PCT;
+                          const topPercent = coordToStageCellUnits(d.r) * CELL_STAGE_PCT;
+                          const isOnGrid = d.r >= 0 && d.r <= GRID_SIZE - 1 && d.c >= 0 && d.c <= GRID_SIZE - 1;
+                          const boxPercent = (isOnGrid ? ON_GRID_CELL_STAGE_UNITS : 1) * CELL_STAGE_PCT;
+                          return (
+                            <div
+                              key={`destroy-${d.id}`}
+                              className="absolute flex items-center justify-center"
+                              style={{ left: `${leftPercent}%`, top: `${topPercent}%`, width: `${boxPercent}%`, height: `${boxPercent}%` }}
+                            >
+                              <div className="relative w-full h-full flex items-center justify-center" style={{ padding: '4px' }}>
+                                <div
+                                  className="absolute inset-0 rounded-md border-2 animate-piece-destroy-ring"
+                                  style={{ borderColor: colorConfig?.hex }}
+                                />
+                                <div
+                                  className="w-full h-full rounded-md animate-piece-destroy"
+                                  style={{
+                                    backgroundColor: colorConfig?.hex,
+                                    boxShadow: `inset 0 -4px 0 ${colorConfig?.dark}`,
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </>
+                  );
+                })()}
+              </div>
             </div>
           </div>
 

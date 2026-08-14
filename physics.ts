@@ -1,4 +1,4 @@
-// --- REACTOR ATTRACTOR: PHYSICS ---
+// --- ELEMENTAL PULL: PHYSICS ---
 //
 // Everything in this file is pure: no React, no DOM, no randomness. The
 // component drives it, the test suite drives it, and both see identical

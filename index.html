@@ -2,9 +2,27 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover lets the page paint under the notch/home
+         indicator; the safe-area insets in styles.css keep the actual UI
+         clear of them. Without it, env(safe-area-inset-*) is always 0. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#faf8ef" />
-    <title>Reactor Attractor</title>
+    <meta name="description" content="Drop tiles, watch them pull each other across the board, and score the chain reaction." />
+
+    <!-- Installability: the manifest is what Bubblewrap reads when wrapping
+         this into a Play Store TWA, so keep it in sync with the store
+         listing. Paths inside it are relative to the manifest itself, which
+         is what makes the same file work from both the domain root and a
+         GitHub Pages /repo-name/ subpath. -->
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" type="image/svg+xml" href="./icons/icon.svg" />
+    <link rel="apple-touch-icon" href="./icons/icon-192.png" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Elemental Pull" />
+
+    <title>Elemental Pull</title>
   </head>
   <body>
     <div id="root"></div>

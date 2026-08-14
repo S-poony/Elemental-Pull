@@ -5,7 +5,15 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "allowSyntheticDefaultImports": true,
-    "types": ["node"]
+    "types": ["node"],
+    // Composite projects must emit, and the emitted vite.config.js would
+    // land next to vite.config.ts — where Vite resolves it FIRST and it
+    // silently becomes the real config, ignoring every later edit to the
+    // .ts. That happened once: a compiled copy pinning base to
+    // /Reactor-Attractor/ was committed and quietly drove every build.
+    // Sending the output somewhere ignored is what stops it recurring.
+    "outDir": ".tsbuild",
+    "tsBuildInfoFile": ".tsbuild/tsconfig.node.tsbuildinfo"
   },
   "include": ["vite.config.ts"]
 }

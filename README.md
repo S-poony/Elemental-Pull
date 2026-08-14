@@ -1,4 +1,4 @@
-# Reactor-Attractor
+# Elemental Pull
 
 A small game. You drop tiles onto a 5×5 board, they attract each other, and you score by how much motion your placement sets off. You lose when there's nowhere legal left to drop.
 
@@ -28,3 +28,13 @@ npm run dev     # play it
 npm test        # physics suite
 npm run build
 ```
+
+## Installing it
+
+It's a PWA — `public/manifest.webmanifest` plus `public/sw.js` — so it installs to a home screen from the browser and plays offline after the first visit. Icons are generated, not committed by hand:
+
+```
+node scripts/make-icons.mjs
+```
+
+`PLAYSTORE.md` covers wrapping the same build as an Android app.

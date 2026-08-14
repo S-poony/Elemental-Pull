@@ -8,6 +8,10 @@ Guidance for Claude Code working in this repo. The game's rules are in `README.m
 - **`game.tsx`** — board, HUD, sounds, animation timing. One default-export component.
 - **`tests/physics.test.ts`** — the suite. Plain TypeScript, no test framework.
 - **`src/main.tsx`**, `src/styles.css`, `index.html` — Vite entry, Tailwind v4 via `@tailwindcss/vite`.
+- **`public/`** — copied verbatim into `dist/`: the web manifest, the service worker and the generated icons. **`scripts/make-icons.mjs`** draws the icons from the same palette as the game; edit the script, not the PNGs.
+- **`PLAYSTORE.md`** — the Android/TWA publishing plan.
+
+The game was called **Reactor Attractor** until the rename to **Elemental Pull**. The word "attractor" still appears throughout `physics.ts` and the suite, and should stay: there it's the domain term for the piece doing the pulling, not the product name. One user-visible trace of the old name survives on purpose — `LEGACY_HIGH_SCORE_KEY` in `game.tsx`, which is read through to so a returning player's best run isn't wiped by the rename.
 
 **Rule changes go in `physics.ts`, always.** `game.tsx` must never re-derive game logic — the overlay calls the same `planMoves` the engine calls, on the same inputs, which is what makes the on-board arrows a guarantee rather than a guess. If you find yourself reimplementing a rule in the component to drive a visual, you've introduced a way for the preview to lie.
 
@@ -55,11 +59,19 @@ which typechecks `game.tsx`, `src/` and everything they import, including JSX.
 
 Board geometry is done in percentages so it stays consistent across breakpoints instead of drifting apart at Tailwind's responsive sizes. Two CSS quirks are already handled and commented, don't "simplify" them away: percentage `padding` resolves against the *containing block's* width, while grid `gap` percentages resolve against the grid's own content box — so the two need different conversions from the same underlying fraction.
 
+**The layout is one non-scrolling viewport, and `vh` is the wrong unit for it.** `.app-shell` is `100dvh`, not `100vh`, because on mobile Firefox and Safari `vh` means the viewport you'd have *if the URL bar were hidden* — so a `100vh` column is always taller than what's actually visible and its bottom sits under the browser chrome. That was a real bug. The board is then sized with `100cqmin` inside a `container-type: size` box, which is "the smaller of the leftover width and height" in one value; the tempting `aspect-square` + `max-height` version does not work, because with a definite width a max-height clamp squashes the box out of square rather than shrinking it.
+
+**Score feedback is one element per payout.** Score is paid per tick, ticks are 250ms apart, and each `+N` flies for 750ms, so several are always airborne at once — they have to be a keyed list that each retire themselves on `animationend`, not one element whose amount gets overwritten. The single-slot version was why the number appeared to drift around instead of ever leaving. Their scatter comes from a hash of the flash id, deliberately not a short cycle like `id % 3`: cascades routinely run past three ticks, and any short period reads as a mechanical left-centre-right march. Everything animates transform and opacity only, which is what keeps a burst free on a phone.
+
 The off-grid rendering machinery is vestigial. Pieces are culled the instant they leave the board, so `BOUNDS_MARGIN` and `MAX_MARGIN_CELLS` are `0`, and `trueDistPastEdge` / `getPieceVisualStyle` always return the identity case. Harmless, but don't spend time reasoning about the compression maths — it never runs.
 
 ## Deploy
 
 GitHub Pages on push to `main` (`.github/workflows/deploy-pages.yml`). `vite.config.ts` sets `base` from `GITHUB_REPOSITORY` when running under Actions, so the built asset paths work from a repo subpath.
+
+**There must never be a `vite.config.js` in the repo root.** Vite resolves `vite.config.js` *before* `vite.config.ts`, so a compiled copy sitting next to the source silently becomes the real config and every later edit to the `.ts` does nothing. Exactly that happened: `tsconfig.node.json` is a composite project over `vite.config.ts`, its emitted `vite.config.js` got committed, and for several commits the deployed base path came from a stale file hardcoding `/Reactor-Attractor/` — which would have 404'd the entire site on the first repo rename. The emit now goes to an ignored `.tsbuild/`, and the generated files are gitignored. If `base` ever stops responding to edits, look for that file first.
+
+That subpath is why nothing in `public/manifest.webmanifest` or `public/sw.js` may use an absolute path. Manifest URLs resolve against the manifest's own location and the worker's against its own, so the `./`-relative forms in both work unchanged from a domain root or from `/Elemental-Pull/`; a leading `/` would break one of the two. `src/main.tsx` registers the worker from `import.meta.env.BASE_URL` for the same reason — a worker can only control pages at or below its own path.
 
 ## Conventions
 
