@@ -1,5 +1,7 @@
 # Elemental Pull
 
+**[▶ Play it in your browser](https://s-poony.github.io/Elemental-Pull/)** — no install, works on phones, and can be added to a home screen to play offline.
+
 A small game. You drop tiles onto a 5×5 board, they attract each other, and you score by how much motion your placement sets off. You lose when there's nowhere legal left to drop.
 
 ## The rules
@@ -18,9 +20,13 @@ Tiles connect on contact — any two touching tiles bind into one group.
 
 ## Code
 
+Built with React, TypeScript, Vite and Tailwind. The one structural rule is that **every game rule lives in `physics.ts`** — the component never re-derives any of it, which is what makes the arrows drawn on the board a guarantee about the next tick rather than a second opinion about it.
+
 - `physics.ts` — the whole rule set, pure and free of React. Nothing here touches the DOM.
 - `game.tsx` — board, HUD, sounds, animation timing.
 - `tests/physics.test.ts` — scenario tests plus the two structural guarantees the design rests on: a tick never freezes while any group wants to move, and every cascade terminates. Also fuzzes full games and compares against the previous engine.
+- `scripts/make-icons.mjs` — draws the app icons from the game's own palette.
+- `CLAUDE.md` — the invariants that are easy to break by accident, and why each one is there.
 
 ```
 npm install
@@ -31,10 +37,16 @@ npm run build
 
 ## Installing it
 
-It's a PWA — `public/manifest.webmanifest` plus `public/sw.js` — so it installs to a home screen from the browser and plays offline after the first visit. Icons are generated, not committed by hand:
+It's a PWA — `public/manifest.webmanifest` plus `public/sw.js` — so it installs to a home screen from the browser and plays offline after the first visit. Icons are generated rather than committed by hand:
 
 ```
 node scripts/make-icons.mjs
 ```
 
 `PLAYSTORE.md` covers wrapping the same build as an Android app.
+
+## Deploying
+
+GitHub Pages, automatically, on every push to `main`. `vite.config.ts` derives the base path from the repository name at build time, so renaming the repo doesn't break the deployed asset paths.
+
+> There must never be a `vite.config.js` in the repo root — Vite resolves it *before* `vite.config.ts`, so a stray compiled copy silently becomes the real config.
